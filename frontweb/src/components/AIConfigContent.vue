@@ -63,7 +63,7 @@
               一键换Key
             </el-button>
           </div>
-          <p class="default-tip">每种服务类型仅有一个默认配置：文本用于生成故事；文本生成图片用于角色/场景/道具图；分镜图片生成用于分镜图（支持参考图）；视频用于生成视频；语音合成 TTS 用于分镜配音。</p>
+          <p class="default-tip">每种服务类型仅有一个默认配置：文本用于生成故事；文本生成图片用于角色/场景/道具图；分镜图片生成用于分镜图（支持参考图）；视频用于生成视频；语音合成 TTS 用于分镜配音；即梦2角色认证用于创作页 SD2 认证（网关 Token）；SD2 资产库用于官方 ModelArk 私有资产（在未配置即梦2角色认证时供 SD2 认证使用）。</p>
           <el-table
             v-loading="loading"
             :data="list"
@@ -90,6 +90,7 @@
                     <VideoCamera v-else-if="row.service_type === 'video'" />
                     <Microphone v-else-if="row.service_type === 'tts'" />
                     <Key v-else-if="row.service_type === 'jimeng2_character_auth'" />
+                    <Folder v-else-if="row.service_type === 'model_ark_asset'" />
                   </el-icon>
                   {{ serviceTypeLabel(row.service_type) }}
                 </span>
@@ -104,7 +105,7 @@
             <el-table-column label="操作" width="180" fixed="right">
               <template #default="{ row }">
                 <el-button link type="primary" size="small" @click="openTest(row)">测试</el-button>
-                <el-button link type="primary" size="small" @click="openEdit(row)">{{ vendorLock.enabled ? '修改Key' : '编辑' }}</el-button>
+                <el-button link type="primary" size="small" @click="onRowEdit(row)">{{ vendorLock.enabled ? '修改Key' : '编辑' }}</el-button>
                 <el-button v-if="!vendorLock.enabled" link type="danger" size="small" @click="onDelete(row)">删除</el-button>
               </template>
             </el-table-column>
@@ -195,7 +196,7 @@
       </el-tab-pane>
       <el-tab-pane label="SD2 资产管理" name="sd2_assets">
         <div class="tab-content">
-          <Sd2AssetManagement :configs="list" />
+          <Sd2AssetManagement :configs="list" @saved="loadList" />
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -1095,7 +1096,7 @@ input_reference = (图片文件，可选)</pre>
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, MagicStick, QuestionFilled, Download, Upload, Delete, ChatDotRound, Picture, Film, VideoCamera, Key, Microphone } from '@element-plus/icons-vue'
+import { Plus, MagicStick, QuestionFilled, Download, Upload, Delete, ChatDotRound, Picture, Film, VideoCamera, Key, Microphone, Folder } from '@element-plus/icons-vue'
 import { aiAPI } from '@/api/ai'
 import { generationSettingsAPI } from '@/api/prompts'
 import PromptEditor from '@/components/PromptEditor.vue'
@@ -1691,8 +1692,18 @@ function serviceTypeLabel(t) {
     video: '视频',
     tts: '语音合成 TTS',
     jimeng2_character_auth: '即梦2角色认证',
+    model_ark_asset: 'SD2 资产库',
   }
   return map[t] || t
+}
+
+function onRowEdit(row) {
+  if (row.service_type === 'model_ark_asset') {
+    activeTab.value = 'sd2_assets'
+    ElMessage.info('请在「SD2 资产管理」标签页编辑此配置')
+    return
+  }
+  openEdit(row)
 }
 
 async function loadList() {
@@ -1945,6 +1956,10 @@ function loadMoreJimeng2MaterialAssets() {
 async function openTest(row) {
   if (row.service_type === 'jimeng2_character_auth') {
     ElMessage.info('即梦2角色认证无需在此联调；保存后请在创作页「角色生成」中点击「SD2认证」验证。')
+    return
+  }
+  if (row.service_type === 'model_ark_asset') {
+    ElMessage.info('SD2 资产库请在「SD2 资产管理」标签页使用「刷新列表」验证连接。')
     return
   }
   testVisible.value = true
@@ -2301,6 +2316,12 @@ onMounted(() => {
   background: rgba(20, 184, 166, 0.14);
   color: #0d9488;
   border-color: rgba(20, 184, 166, 0.28);
+}
+
+.type-model_ark_asset {
+  background: rgba(99, 102, 241, 0.12);
+  color: #6366f1;
+  border-color: rgba(99, 102, 241, 0.25);
 }
 
 .no-default {

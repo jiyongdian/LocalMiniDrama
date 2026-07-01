@@ -7,6 +7,7 @@ const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
 const { mergeCfgStyleWithDrama } = require('../utils/dramaStyleMerge');
 const jimengMaterialHubService = require('./jimengMaterialHubService');
+const modelArkAssetConfigService = require('./modelArkAssetConfigService');
 const uploadService = require('./uploadService');
 const seedance2AssetGuards = require('../utils/seedance2AssetGuards');
 const {
@@ -776,19 +777,30 @@ function readSeedance2AssetJson(text) {
   }
 }
 
-/**
- * 调用即梦素材库（官方兼容 /api/business/v1/assets）注册角色主图，并轮询至 active / failed（或超时保留 processing）
- */
-async function registerCharacterJimengMaterialAsset(db, log, cfg, characterId) {
-  const materialHub = jimengMaterialHubService;
-  const hubCtx = materialHub.buildHubContext(cfg, db, log);
-  if (!hubCtx.token) {
-    return {
-      ok: false,
-      error:
-        '未配置即梦2角色认证：请在「AI 配置」中新增一条「即梦2角色认证」，填写网关 URL 与 Token（或设置环境变量 JIMENG2_CHARACTER_AUTH_*；兼容旧 config）',
-    };
+function resolveSd2RegisterProvider(cfg, db, log) {
+  const hubCtx = jimengMaterialHubService.buildHubContext(cfg, db, log);
+  if (hubCtx.token) return { provider: 'hub', hubCtx };
+  const arkCtx = modelArkAssetConfigService.buildModelArkContext(db, log);
+  if (arkCtx.ready) return { provider: 'model_ark', arkCtx };
+  return { provider: null, hubCtx, arkCtx };
+}
+
+function sd2ConfigMissingError(hubCtx, arkCtx) {
+  const parts = [
+    '未配置 SD2 认证，请在「AI 配置」中任选其一：',
+    '① 添加「即梦2角色认证」（网关 URL + Token）；',
+    '② 或在「SD2 资产管理」点击「保存到 AI 配置」，填写 AK/SK 与默认资产组 Id。',
+  ];
+  if (arkCtx?.diag?.missing) {
+    parts.push(`（ModelArk 配置不完整：缺少 ${arkCtx.diag.missing}）`);
   }
+  if (!hubCtx?.token && arkCtx?.diag?.db_model_ark_row_found === false) {
+    parts.push('（当前未找到已保存的 ModelArk 资产库配置）');
+  }
+  return parts.join('');
+}
+
+async function prepareCharacterRegisterImage(db, log, cfg, characterId) {
   const charRow = db.prepare('SELECT * FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(characterId));
   if (!charRow) return { ok: false, error: 'character not found' };
   if (!charRow.image_url && !charRow.local_path) {
@@ -800,57 +812,65 @@ async function registerCharacterJimengMaterialAsset(db, log, cfg, characterId) {
   if (String(imageUrl).startsWith('data:')) {
     return { ok: false, error: '不支持 base64 图片注册，请先使用上传或外网图链' };
   }
-
   const pub = await ensurePublicRegisterImageUrlForMaterialHub(db, log, cfg, charRow, imageUrl);
   if (!pub.ok) return pub;
-  let registerImageUrl = pub.url;
+  return {
+    ok: true,
+    charRow,
+    imageUrl,
+    registerImageUrl: pub.url,
+    pub,
+    assetName: String(charRow.name || 'role').replace(/\s+/g, '').slice(0, 12) || 'role',
+  };
+}
 
-  const assetName = String(charRow.name || 'role').replace(/\s+/g, '').slice(0, 12) || 'role';
+function buildSeedance2BasePayload(charRow, assetId, created, registerImageUrl, sd2Provider) {
+  const now = new Date().toISOString();
+  const certifiedLp = seedance2AssetGuards.normalizeStorageRelPath(charRow.local_path || '') || null;
+  const certifiedImg = (charRow.image_url || '').toString().trim() || null;
+  return {
+    hub_asset_id: assetId,
+    asset_url: created.asset_url || modelArkAssetConfigService.assetUrlForVideo(created) || null,
+    status: created.status || 'processing',
+    source_image_url: registerImageUrl,
+    certified_local_path: certifiedLp,
+    certified_image_url: certifiedImg,
+    sd2_provider: sd2Provider,
+    character_display: {
+      name: charRow.name || '',
+      appearance: (charRow.appearance || '').slice(0, 500) || null,
+      description: (charRow.description || '').slice(0, 500) || null,
+    },
+    updated_at: now,
+  };
+}
+
+async function registerCharacterViaJimengHub(db, log, cfg, characterId, hubCtx, prep) {
+  const { charRow, imageUrl, registerImageUrl: initialUrl, pub, assetName } = prep;
+  let registerImageUrl = initialUrl;
   const registerUrlLooksPrivate = isNonPublicMaterialHubUrl(imageUrl);
-  log.info('[SD2认证] 请求参数摘要', {
+  log.info('[SD2认证][hub] 请求参数摘要', {
     character_id: Number(characterId),
     character_name: charRow.name,
     drama_id: charRow.drama_id,
-    image_url_db: charRow.image_url ? String(charRow.image_url).slice(0, 240) : null,
-    local_path: charRow.local_path || null,
     resolved_register_image_url: String(registerImageUrl).slice(0, 500),
-    pre_proxy_image_url: registerUrlLooksPrivate ? String(imageUrl).slice(0, 240) : null,
-    public_image_via: pub.via,
-    storage_base_url: (cfg?.storage?.base_url || '').toString().slice(0, 160),
     hub_gateway: hubCtx.baseUrl,
     hub_auth_diag: hubCtx.hubAuthDiag || null,
     asset_name: assetName,
     register_url_looks_private_host: registerUrlLooksPrivate,
-    hint: registerUrlLooksPrivate && pub.via !== 'direct'
-      ? '本地/内网图片已自动经中转图床生成公网 URL 后提交素材库'
-      : registerUrlLooksPrivate
-        ? '素材库在云端拉取图片失败多为 URL 不可达：请换图床/公网 https 直链，或将 storage.base_url 改为公网可访问的静态资源地址'
-        : '若仍失败，请用浏览器或 curl 在无 VPN 的机器上访问 resolved_register_image_url 确认 200 且 Content-Type 为图片',
   });
 
-  let createRes = await materialHub.createImageAsset(hubCtx, { url: registerImageUrl, name: assetName }, log);
+  let createRes = await jimengMaterialHubService.createImageAsset(hubCtx, { url: registerImageUrl, name: assetName }, log);
   if (!createRes.ok && isHubDownloadMediaError(createRes.error) && pub.via === 'direct' && charRow.local_path) {
     const proxyRetry = await ensurePublicRegisterImageUrlForMaterialHub(db, log, cfg, charRow, imageUrl, {
       forceLocalProxy: true,
     });
     if (proxyRetry.ok && proxyRetry.url && proxyRetry.url !== registerImageUrl) {
-      log.info('[SD2认证] 网关无法拉取原图直链，已改用图床 URL 重试', {
-        character_id: Number(characterId),
-        public_image_via: proxyRetry.via,
-        retry_url_head: String(proxyRetry.url).slice(0, 120),
-      });
       registerImageUrl = proxyRetry.url;
-      createRes = await materialHub.createImageAsset(hubCtx, { url: registerImageUrl, name: assetName }, log);
+      createRes = await jimengMaterialHubService.createImageAsset(hubCtx, { url: registerImageUrl, name: assetName }, log);
     }
   }
   if (!createRes.ok) {
-    log.warn('[SD2认证] create asset 失败', {
-      character_id: Number(characterId),
-      http_status: createRes.status,
-      error: createRes.error,
-      resolved_register_image_url: registerImageUrl,
-      hub_auth_diag: hubCtx.hubAuthDiag || null,
-    });
     let errMsg = formatSd2HubError(createRes.error, hubCtx);
     if (isHubDownloadMediaError(createRes.error)) {
       errMsg +=
@@ -860,43 +880,21 @@ async function registerCharacterJimengMaterialAsset(db, log, cfg, characterId) {
   }
   const created = createRes.data;
   const assetId = created.id;
-  if (!assetId) {
-    return { ok: false, error: '素材库返回缺少素材 id' };
-  }
+  if (!assetId) return { ok: false, error: '素材库返回缺少素材 id' };
 
-  const now = new Date().toISOString();
-  const certifiedLp = seedance2AssetGuards.normalizeStorageRelPath(charRow.local_path || '') || null;
-  const certifiedImg = (charRow.image_url || '').toString().trim() || null;
-  const basePayload = {
-    hub_asset_id: assetId,
-    asset_url: created.asset_url || null,
-    status: created.status || 'processing',
-    source_image_url: registerImageUrl,
-    /** 仅当参考图与认证时主图路径一致时才在视频中替换为 asset://（换主图后须重新认证） */
-    certified_local_path: certifiedLp,
-    certified_image_url: certifiedImg,
-    character_display: {
-      name: charRow.name || '',
-      appearance: (charRow.appearance || '').slice(0, 500) || null,
-      description: (charRow.description || '').slice(0, 500) || null,
-    },
-    updated_at: now,
-  };
+  const basePayload = buildSeedance2BasePayload(charRow, assetId, created, registerImageUrl, 'hub');
   db.prepare('UPDATE characters SET seedance2_asset = ?, updated_at = ? WHERE id = ?').run(
     JSON.stringify(basePayload),
-    now,
+    basePayload.updated_at,
     Number(characterId)
   );
 
-  const poll = await materialHub.pollAssetUntilSettled(hubCtx, assetId, {
+  const poll = await jimengMaterialHubService.pollAssetUntilSettled(hubCtx, assetId, {
     maxMs: hubCtx.poll_max_ms != null ? Number(hubCtx.poll_max_ms) : 120000,
     intervalMs: hubCtx.poll_interval_ms != null ? Number(hubCtx.poll_interval_ms) : 2000,
     log,
   });
-  if (!poll.ok) {
-    log.warn('即梦素材库 poll asset 失败', { characterId, assetId, error: poll.error });
-    return { ok: false, error: poll.error };
-  }
+  if (!poll.ok) return { ok: false, error: poll.error };
   const settled = poll.asset || created;
   const nextPayload = {
     ...basePayload,
@@ -911,16 +909,95 @@ async function registerCharacterJimengMaterialAsset(db, log, cfg, characterId) {
     nextPayload.updated_at,
     Number(characterId)
   );
-  log.info('即梦素材库 seedance2 素材已登记', { characterId, hub_asset_id: assetId, status: nextPayload.status });
+  log.info('[SD2认证][hub] 素材已登记', { characterId, hub_asset_id: assetId, status: nextPayload.status });
   return { ok: true, seedance2_asset: nextPayload };
 }
 
-async function refreshCharacterJimengMaterialAsset(db, log, cfg, characterId) {
-  const materialHub = jimengMaterialHubService;
-  const hubCtx = materialHub.buildHubContext(cfg, db, log);
-  if (!hubCtx.token) {
-    return { ok: false, error: '未配置即梦2角色认证：请在「AI 配置」中填写 Token' };
+async function registerCharacterViaModelArk(db, log, cfg, characterId, arkCtx, prep) {
+  const { charRow, imageUrl, registerImageUrl: initialUrl, pub, assetName } = prep;
+  let registerImageUrl = initialUrl;
+  log.info('[SD2认证][model_ark] 请求参数摘要', {
+    character_id: Number(characterId),
+    character_name: charRow.name,
+    drama_id: charRow.drama_id,
+    resolved_register_image_url: String(registerImageUrl).slice(0, 500),
+    asset_group_id: arkCtx.assetGroupId,
+    auth_mode: arkCtx.diag?.auth_mode,
+    asset_name: assetName,
+  });
+
+  let createRes = await modelArkAssetConfigService.createImageAsset(
+    arkCtx,
+    { url: registerImageUrl, name: assetName },
+    log
+  );
+  if (!createRes.ok && isHubDownloadMediaError(createRes.error) && pub.via === 'direct' && charRow.local_path) {
+    const proxyRetry = await ensurePublicRegisterImageUrlForMaterialHub(db, log, cfg, charRow, imageUrl, {
+      forceLocalProxy: true,
+    });
+    if (proxyRetry.ok && proxyRetry.url && proxyRetry.url !== registerImageUrl) {
+      registerImageUrl = proxyRetry.url;
+      createRes = await modelArkAssetConfigService.createImageAsset(
+        arkCtx,
+        { url: registerImageUrl, name: assetName },
+        log
+      );
+    }
   }
+  if (!createRes.ok) {
+    return {
+      ok: false,
+      error: `ModelArk 创建资产失败：${String(createRes.error || '').slice(0, 1500)}`,
+    };
+  }
+  const created = createRes.data;
+  const assetId = created.id;
+  if (!assetId) return { ok: false, error: 'ModelArk 返回缺少资产 Id' };
+
+  const basePayload = buildSeedance2BasePayload(charRow, assetId, created, registerImageUrl, 'model_ark');
+  db.prepare('UPDATE characters SET seedance2_asset = ?, updated_at = ? WHERE id = ?').run(
+    JSON.stringify(basePayload),
+    basePayload.updated_at,
+    Number(characterId)
+  );
+
+  const poll = await modelArkAssetConfigService.pollAssetUntilSettled(arkCtx, assetId, { log });
+  if (!poll.ok) return { ok: false, error: poll.error };
+  const settled = poll.asset || created;
+  const nextPayload = {
+    ...basePayload,
+    asset_url: settled.asset_url ?? basePayload.asset_url,
+    status: settled.status || basePayload.status,
+    poll_timed_out: !!poll.timedOut,
+    updated_at: new Date().toISOString(),
+  };
+  db.prepare('UPDATE characters SET seedance2_asset = ?, updated_at = ? WHERE id = ?').run(
+    JSON.stringify(nextPayload),
+    nextPayload.updated_at,
+    Number(characterId)
+  );
+  log.info('[SD2认证][model_ark] 素材已登记', { characterId, hub_asset_id: assetId, status: nextPayload.status });
+  return { ok: true, seedance2_asset: nextPayload };
+}
+
+/**
+ * 注册角色主图为 Seedance 2.0 可用 asset 引用。
+ * 优先即梦2角色认证（hub）；否则使用已保存的 ModelArk 官方资产库配置。
+ */
+async function registerCharacterJimengMaterialAsset(db, log, cfg, characterId) {
+  const route = resolveSd2RegisterProvider(cfg, db, log);
+  if (!route.provider) {
+    return { ok: false, error: sd2ConfigMissingError(route.hubCtx, route.arkCtx) };
+  }
+  const prep = await prepareCharacterRegisterImage(db, log, cfg, characterId);
+  if (!prep.ok) return prep;
+  if (route.provider === 'hub') {
+    return registerCharacterViaJimengHub(db, log, cfg, characterId, route.hubCtx, prep);
+  }
+  return registerCharacterViaModelArk(db, log, cfg, characterId, route.arkCtx, prep);
+}
+
+async function refreshCharacterJimengMaterialAsset(db, log, cfg, characterId) {
   const charRow = db.prepare('SELECT id, seedance2_asset FROM characters WHERE id = ? AND deleted_at IS NULL').get(Number(characterId));
   if (!charRow) return { ok: false, error: 'character not found' };
   const prev = readSeedance2AssetJson(charRow.seedance2_asset);
@@ -928,24 +1005,35 @@ async function refreshCharacterJimengMaterialAsset(db, log, cfg, characterId) {
   if (!assetId) {
     return { ok: false, error: '暂未取得素材 id，请先完成 SD2 认证' };
   }
-  const r = await materialHub.getAsset(hubCtx, assetId, log);
-  if (!r.ok) {
-    log.warn('[SD2认证] refresh getAsset 失败', {
-      character_id: Number(characterId),
-      http_status: r.status,
-      error: r.error,
-      hub_auth_diag: hubCtx.hubAuthDiag || null,
-    });
-    return { ok: false, error: r.error };
+
+  const provider = String(prev?.sd2_provider || '').toLowerCase() === 'model_ark' ? 'model_ark' : 'hub';
+  let settled;
+  if (provider === 'model_ark') {
+    const arkCtx = modelArkAssetConfigService.buildModelArkContext(db, log);
+    if (!arkCtx.ready) {
+      return { ok: false, error: '未找到有效的 ModelArk 资产库配置，无法刷新认证状态' };
+    }
+    const r = await modelArkAssetConfigService.getAsset(arkCtx, assetId, log);
+    if (!r.ok) return { ok: false, error: r.error };
+    settled = r.data;
+  } else {
+    const hubCtx = jimengMaterialHubService.buildHubContext(cfg, db, log);
+    if (!hubCtx.token) {
+      return { ok: false, error: '未配置即梦2角色认证：请在「AI 配置」中填写 Token' };
+    }
+    const r = await jimengMaterialHubService.getAsset(hubCtx, assetId, log);
+    if (!r.ok) return { ok: false, error: r.error };
+    settled = r.data;
   }
-  const settled = r.data;
+
   const now = new Date().toISOString();
   const nextPayload = {
     ...(prev && typeof prev === 'object' ? prev : {}),
     hub_asset_id: assetId,
-    asset_url: settled.asset_url ?? prev?.asset_url ?? null,
+    asset_url: settled.asset_url ?? prev?.asset_url ?? modelArkAssetConfigService.assetUrlForVideo(settled) ?? null,
     status: settled.status || prev?.status || 'processing',
     hub_url: settled.url ?? prev?.hub_url ?? null,
+    sd2_provider: provider,
     updated_at: now,
   };
   db.prepare('UPDATE characters SET seedance2_asset = ?, updated_at = ? WHERE id = ?').run(

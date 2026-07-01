@@ -118,16 +118,20 @@ function setupRouter(cfg, db, log) {
     }
   });
 
-  // 故事生成：根据梗概 + 风格/类型 生成扩展剧本正文（不创建项目）
+  // 故事生成：带 drama_id 时异步生成并入库；否则同步返回 episodes（兼容旧调用）
   r.post('/generation/story', async (req, res) => {
     const storyGenerationService = require('../services/storyGenerationService');
     try {
       const body = req.body || {};
+      if (body.drama_id) {
+        const taskId = storyGenerationService.startStoryGeneration(db, log, body);
+        return response.success(res, { task_id: taskId, status: 'pending' });
+      }
       const result = await storyGenerationService.generateStory(db, log, body);
       response.success(res, result);
     } catch (err) {
       log.error('generation/story', { error: err.message });
-      if (err.message && err.message.includes('未配置')) {
+      if (err.message && (err.message.includes('未配置') || err.message.includes('必填') || err.message.includes('不存在'))) {
         return response.badRequest(res, err.message);
       }
       response.internalError(res, err.message || '故事生成失败');
@@ -217,6 +221,7 @@ function setupRouter(cfg, db, log) {
 
   // ---------- tasks ----------
   r.get('/tasks/:task_id', task.getTaskStatus);
+  r.post('/tasks/:task_id/cancel', task.cancelTaskStatus);
   r.get('/tasks', task.getResourceTasks);
 
   // ---------- scenes ----------

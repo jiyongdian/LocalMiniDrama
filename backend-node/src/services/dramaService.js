@@ -739,7 +739,7 @@ function saveCanvasLayout(db, log, dramaId, req) {
     node_count: layout ? Object.keys(layout.nodes || {}).length : undefined,
     workflow_group_count: workflowGroups ? workflowGroups.length : undefined,
   });
-  return getDramaById(db, Number(dramaId));
+  return getDrama(db, dramaId);
 }
 
 /**

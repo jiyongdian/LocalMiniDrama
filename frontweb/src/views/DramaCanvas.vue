@@ -17,7 +17,6 @@
           size="small"
           style="width: 150px"
         >
-          <el-option label="全部集数" :value="null" />
           <el-option
             v-for="ep in (drama?.episodes || [])"
             :key="ep.id"
@@ -31,6 +30,24 @@
         <span v-else-if="layoutSaveState === 'error'" class="layout-status error">保存失败</span>
 
         <div class="header-actions">
+          <el-button size="small" type="warning" plain @click="focusScriptNode">
+            剧本
+          </el-button>
+          <el-button size="small" @click="openCreateDialog('storyboard')">
+            <el-icon><Plus /></el-icon>
+            分镜
+          </el-button>
+          <el-button size="small" @click="openCreateDialog('character')">角色</el-button>
+          <el-button size="small" @click="openCreateDialog('scene')">场景</el-button>
+          <el-button size="small" @click="openCreateDialog('prop')">道具</el-button>
+          <el-button size="small" @click="openCreateDialog('episode')">
+            <el-icon><Plus /></el-icon>
+            集
+          </el-button>
+          <el-button size="small" :loading="aligningNodes" @click="onAlignNodes">
+            <el-icon><Grid /></el-icon>
+            对齐节点
+          </el-button>
           <el-button type="primary" plain @click="goListMode">
             <el-icon><List /></el-icon>
             列表模式
@@ -45,9 +62,9 @@
       <div class="workflow-bar">
         <span class="wf-hint">已选 {{ selectedStoryboardIds.length }} 个分镜</span>
         <el-checkbox-group v-model="pipelineSteps" size="small" class="wf-steps">
-          <el-checkbox label="image">生图</el-checkbox>
-          <el-checkbox label="video">生视频</el-checkbox>
-          <el-checkbox label="audio">配音</el-checkbox>
+          <el-checkbox value="image">生图</el-checkbox>
+          <el-checkbox value="video">生视频</el-checkbox>
+          <el-checkbox value="audio">配音</el-checkbox>
         </el-checkbox-group>
         <el-button size="small" :disabled="selectedStoryboardIds.length === 0" @click="onCreateWorkflowGroup">
           创建工作流
@@ -81,16 +98,57 @@
       </div>
 
       <div v-if="workflowProgress" class="workflow-progress">{{ workflowProgress }}</div>
+
+      <div class="generate-bar">
+        <span class="gen-label">本集生成</span>
+        <el-button
+          size="small"
+          type="primary"
+          :loading="episodeGenerating"
+          :disabled="!filterEpisodeId || workflowRunning"
+          @click="aiGenerateStoryboards"
+        >
+          AI 生成分镜
+        </el-button>
+        <el-button
+          size="small"
+          :loading="episodeGenerating"
+          :disabled="!filterEpisodeId || workflowRunning"
+          @click="batchGenerateImages"
+        >
+          批量生图
+        </el-button>
+        <el-button
+          size="small"
+          :loading="episodeGenerating"
+          :disabled="!filterEpisodeId || workflowRunning"
+          @click="batchGenerateVideos"
+        >
+          批量生视频
+        </el-button>
+        <span class="gen-hint" title="完整创作流水线">剧本 → 提取角色/场景/道具 → 分镜 → 生图 → 视频</span>
+      </div>
+      <div v-if="episodeGenProgress" class="workflow-progress episode-gen">{{ episodeGenProgress }}</div>
     </header>
 
     <div v-loading="loading" class="canvas-shell">
       <aside v-if="drama" class="canvas-sidebar">
+        <div class="sidebar-section sidebar-script">
+          <div class="sec-label sec-label-row">
+            <span>📜 剧本</span>
+            <el-button link size="small" type="warning" @click="focusScriptNode">编辑</el-button>
+          </div>
+          <p class="sidebar-script-tip">从头创作：先写剧本，再提取左侧素材</p>
+        </div>
         <div class="sidebar-title">
           素材库
           <el-button v-if="highlightAssetId" link size="small" @click="clearAssetHighlight">清除</el-button>
         </div>
         <div class="sidebar-section">
-          <div class="sec-label">角色 {{ (drama.characters || []).length }}</div>
+          <div class="sec-label sec-label-row">
+            <span>角色 {{ (drama.characters || []).length }}</span>
+            <el-button link size="small" type="primary" @click="openCreateDialog('character')">+</el-button>
+          </div>
           <div
             v-for="c in (drama.characters || [])"
             :key="'c-' + c.id"
@@ -102,7 +160,10 @@
           </div>
         </div>
         <div class="sidebar-section">
-          <div class="sec-label">场景 {{ (drama.scenes || []).length }}</div>
+          <div class="sec-label sec-label-row">
+            <span>场景 {{ (drama.scenes || []).length }}</span>
+            <el-button link size="small" type="primary" @click="openCreateDialog('scene')">+</el-button>
+          </div>
           <div
             v-for="s in (drama.scenes || [])"
             :key="'s-' + s.id"
@@ -114,7 +175,10 @@
           </div>
         </div>
         <div class="sidebar-section">
-          <div class="sec-label">道具 {{ (drama.props || []).length }}</div>
+          <div class="sec-label sec-label-row">
+            <span>道具 {{ (drama.props || []).length }}</span>
+            <el-button link size="small" type="primary" @click="openCreateDialog('prop')">+</el-button>
+          </div>
           <div
             v-for="p in (drama.props || [])"
             :key="'p-' + p.id"
@@ -141,10 +205,10 @@
           <div v-if="!workflowGroups.length" class="sidebar-empty">框选分镜后点「创建工作流」</div>
         </div>
 
-        <p class="sidebar-tip">左键在空白处拖拽可框选分镜；Ctrl 点击多选；中键/右键拖动画布；单击节点展开操作面板。</p>
+        <p class="sidebar-tip">经典模式流水线：分镜 → 脚本摘要 → 分镜图 → 视频。摘要节点是画布可视化，列表里合并在分镜编辑区。顶栏「本集生成」可 AI 批量操作；单击分镜可单镜生图/生视频。</p>
       </aside>
 
-      <div class="canvas-main">
+      <div ref="canvasMainRef" class="canvas-main">
         <VueFlow
           v-if="nodes.length"
           v-model:nodes="nodes"
@@ -163,29 +227,45 @@
           @node-double-click="onNodeDoubleClick"
           @node-click="onNodeClick"
           @pane-click="onPaneClick"
+          @pane-context-menu="onPaneContextMenu"
           @node-drag-stop="scheduleLayoutSave"
           @viewport-change="onViewportChange"
           @move-end="scheduleLayoutSave"
           @selection-change="onSelectionChange"
         >
+          <CanvasFlowAligner />
           <Background pattern-color="#3f3f46" :gap="20" />
           <Controls />
           <MiniMap pannable zoomable />
         </VueFlow>
         <el-empty v-else-if="!loading" description="暂无画布数据" />
+        <CanvasFloatingToolbar v-if="drama && nodes.length" />
       </div>
     </div>
+
+    <CanvasCreateDialog
+      v-model="createDialogVisible"
+      :type="createDialogType"
+      :on-submit="onCreateSubmit"
+    />
+    <CanvasContextMenu
+      :visible="contextMenuVisible"
+      :x="contextMenuX"
+      :y="contextMenuY"
+      @select="onContextMenuSelect"
+      @close="closeContextMenu"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, markRaw, onBeforeUnmount, provide, ref, watch } from 'vue'
+import { computed, markRaw, nextTick, onBeforeUnmount, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
 import { MiniMap } from '@vue-flow/minimap'
-import { List, Moon, Sunny } from '@element-plus/icons-vue'
+import { List, Moon, Plus, Sunny, Grid } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import '@vue-flow/core/dist/style.css'
@@ -198,9 +278,14 @@ import { useTheme } from '@/composables/useTheme'
 import { runWorkflowGroup } from '@/composables/useCanvasWorkflowRunner'
 import { CANVAS_CONTEXT_KEY } from '@/composables/useCanvasContext'
 import { useCanvasStoryboardMedia } from '@/composables/useCanvasStoryboardMedia'
+import { useCanvasCrud } from '@/composables/useCanvasCrud'
+import { useCanvasEpisodeGenerate } from '@/composables/useCanvasEpisodeGenerate'
+import { useCanvasScript, scriptNodeId } from '@/composables/useCanvasScript'
+import { createCanvasNodeStatusStore } from '@/composables/useCanvasNodeStatus'
 import {
   applyCanvasHighlight,
   buildDramaCanvasGraph,
+  computeAutoLayoutPositions,
   getStoryboardRefFromNode,
   stampEdgeBaseStyles,
 } from '@/utils/dramaCanvasAdapter'
@@ -224,8 +309,14 @@ import CanvasLabelNode from '@/components/dramaCanvas/CanvasLabelNode.vue'
 import CanvasDramaHeaderNode from '@/components/dramaCanvas/CanvasDramaHeaderNode.vue'
 import CanvasAssetNode from '@/components/dramaCanvas/CanvasAssetNode.vue'
 import CanvasEpisodeNode from '@/components/dramaCanvas/CanvasEpisodeNode.vue'
+import CanvasScriptNode from '@/components/dramaCanvas/CanvasScriptNode.vue'
 import CanvasStoryboardNode from '@/components/dramaCanvas/CanvasStoryboardNode.vue'
 import CanvasMediaNode from '@/components/dramaCanvas/CanvasMediaNode.vue'
+import CanvasCreateDialog from '@/components/dramaCanvas/CanvasCreateDialog.vue'
+import CanvasContextMenu from '@/components/dramaCanvas/CanvasContextMenu.vue'
+import CanvasAddButtonNode from '@/components/dramaCanvas/CanvasAddButtonNode.vue'
+import CanvasFloatingToolbar from '@/components/dramaCanvas/CanvasFloatingToolbar.vue'
+import CanvasFlowAligner from '@/components/dramaCanvas/CanvasFlowAligner.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -249,20 +340,32 @@ const layoutSaveState = ref('idle')
 const layoutDirty = ref(false)
 const currentViewport = ref({ x: 0, y: 0, zoom: 0.75 })
 const focusedNodeId = ref(null)
+const canvasMainRef = ref(null)
+const contextMenuVisible = ref(false)
+const contextMenuX = ref(0)
+const contextMenuY = ref(0)
+const contextMenuFlowPos = ref(null)
+const paneClickSuppressed = ref(false)
+const nodeStatus = createCanvasNodeStatusStore()
+const aligningNodes = ref(false)
+const canvasFlowApi = ref(null)
 
-const PANEL_NODE_TYPES = new Set(['canvasStoryboard', 'canvasMedia', 'canvasAsset'])
+const PANEL_NODE_TYPES = new Set(['canvasStoryboard', 'canvasMedia', 'canvasAsset', 'canvasScript'])
 
 let saveTimer = null
 let savedHintTimer = null
 let pollTimer = null
+let paneClickSuppressTimer = null
 
 const nodeTypes = {
   canvasLabel: markRaw(CanvasLabelNode),
   canvasDramaHeader: markRaw(CanvasDramaHeaderNode),
   canvasAsset: markRaw(CanvasAssetNode),
   canvasEpisode: markRaw(CanvasEpisodeNode),
+  canvasScript: markRaw(CanvasScriptNode),
   canvasStoryboard: markRaw(CanvasStoryboardNode),
   canvasMedia: markRaw(CanvasMediaNode),
+  canvasAddButton: markRaw(CanvasAddButtonNode),
 }
 
 const dramaId = computed(() => Number(route.params.id))
@@ -328,10 +431,65 @@ function setHighlightAsset(assetNodeId) {
   applyHighlight()
 }
 
-async function refreshCanvas() {
+async function refreshDrama(preserveFocus = true) {
+  const keepId = preserveFocus ? focusedNodeId.value : null
   await loadDrama(true)
   await loadForDrama(drama.value, filterEpisodeId.value)
   rebuildGraph()
+  if (keepId) focusedNodeId.value = keepId
+}
+
+async function refreshCanvas(preserveFocus = true) {
+  await refreshDrama(preserveFocus)
+}
+
+function suppressPaneClick(ms = 350) {
+  paneClickSuppressed.value = true
+  if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
+  paneClickSuppressTimer = setTimeout(() => {
+    paneClickSuppressed.value = false
+    paneClickSuppressTimer = null
+  }, ms)
+}
+
+function screenToFlowPosition(clientX, clientY) {
+  const el = canvasMainRef.value
+  if (!el) return null
+  const rect = el.getBoundingClientRect()
+  const vp = currentViewport.value
+  return {
+    x: (clientX - rect.left - vp.x) / vp.zoom,
+    y: (clientY - rect.top - vp.y) / vp.zoom,
+  }
+}
+
+function onPaneContextMenu(payload) {
+  const event = payload?.event || payload
+  if (event?.preventDefault) event.preventDefault()
+  const flowPos = payload?.flowPosition || screenToFlowPosition(event.clientX, event.clientY)
+  contextMenuFlowPos.value = flowPos
+  contextMenuX.value = event.clientX
+  contextMenuY.value = event.clientY
+  contextMenuVisible.value = true
+}
+
+function closeContextMenu() {
+  contextMenuVisible.value = false
+  contextMenuFlowPos.value = null
+}
+
+function onContextMenuSelect(type) {
+  pendingFlowPosition.value = contextMenuFlowPos.value
+  openCreateDialog(type, contextMenuFlowPos.value)
+  closeContextMenu()
+}
+
+async function onCreateSubmit(form) {
+  try {
+    await submitCreate(form)
+  } catch (e) {
+    ElMessage.error(e?.message || '创建失败')
+  }
 }
 
 function getCanvasGenerationOptions() {
@@ -340,6 +498,8 @@ function getCanvasGenerationOptions() {
     imagesBySbId: imagesBySbId.value,
   }
 }
+
+const scriptActionsHolder = {}
 
 provide(CANVAS_CONTEXT_KEY, {
   focusedNodeId,
@@ -355,6 +515,14 @@ provide(CANVAS_CONTEXT_KEY, {
   },
   setHighlightAsset,
   refresh: refreshCanvas,
+  refreshDrama,
+  suppressPaneClick,
+  nodeStatus,
+  openCreateDialog: (...args) => openCreateDialog(...args),
+  scriptActions: scriptActionsHolder,
+  registerCanvasFlowApi: (api) => {
+    canvasFlowApi.value = api
+  },
 })
 
 function clearAssetHighlight() {
@@ -394,10 +562,35 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
   layoutSaveState.value = 'saving'
   try {
     const updated = await dramaAPI.saveCanvasLayout(dramaId.value, layoutPayload, groupsPayload)
-    drama.value = updated
     const meta = parseDramaMetadata(updated.metadata)
     if (meta.canvas_layout) layoutCache.value = meta.canvas_layout
     if (meta.workflow_groups) workflowGroups.value = meta.workflow_groups
+    // 仅合并 metadata / 时间戳，勿用精简对象覆盖 episodes、characters 等完整数据
+    if (drama.value && updated) {
+      drama.value = {
+        ...drama.value,
+        metadata: updated.metadata,
+        updated_at: updated.updated_at,
+        title: updated.title ?? drama.value.title,
+        style: updated.style ?? drama.value.style,
+        genre: updated.genre ?? drama.value.genre,
+        description: updated.description ?? drama.value.description,
+      }
+      if (Array.isArray(updated.episodes) && updated.episodes.length) {
+        drama.value.episodes = updated.episodes
+      }
+      if (Array.isArray(updated.characters)) {
+        drama.value.characters = updated.characters
+      }
+      if (Array.isArray(updated.scenes)) {
+        drama.value.scenes = updated.scenes
+      }
+      if (Array.isArray(updated.props)) {
+        drama.value.props = updated.props
+      }
+    } else if (updated) {
+      drama.value = updated
+    }
     layoutSaveState.value = 'saved'
     layoutDirty.value = false
     if (savedHintTimer) clearTimeout(savedHintTimer)
@@ -407,6 +600,103 @@ async function persistCanvasState({ layoutOnly = false, groupsOnly = false } = {
   } catch (e) {
     layoutSaveState.value = 'error'
     ElMessage.error(e?.message || '保存失败')
+  }
+}
+
+const {
+  createDialogVisible,
+  createDialogType,
+  pendingFlowPosition,
+  openCreateDialog,
+  submitCreate,
+} = useCanvasCrud({
+  drama,
+  filterEpisodeId,
+  layoutCache,
+  focusedNodeId,
+  refreshCanvas,
+  persistCanvasState,
+})
+
+const {
+  episodeGenerating,
+  episodeGenProgress,
+  aiGenerateStoryboards,
+  batchGenerateImages,
+  batchGenerateVideos,
+} = useCanvasEpisodeGenerate({
+  drama,
+  filterEpisodeId,
+  imagesBySbId,
+  videosBySbId,
+  refreshCanvas,
+  nodeStatus,
+})
+
+Object.assign(
+  scriptActionsHolder,
+  useCanvasScript({
+    drama,
+    dramaId,
+    refreshCanvas: refreshDrama,
+    nodeStatus,
+  })
+)
+
+function focusScriptNode() {
+  let epId = filterEpisodeId.value
+  if (!epId) {
+    const eps = drama.value?.episodes || []
+    if (eps.length === 1) epId = eps[0].id
+  }
+  if (!epId) {
+    ElMessage.warning('请先选择或新建集数')
+    return
+  }
+  if (!filterEpisodeId.value) filterEpisodeId.value = epId
+  focusedNodeId.value = scriptNodeId(epId)
+}
+
+async function onAlignNodes() {
+  if (!drama.value || !nodes.value.length || aligningNodes.value) return
+  aligningNodes.value = true
+  focusedNodeId.value = null
+  try {
+    const { positions } = computeAutoLayoutPositions(drama.value, {
+      episodeId: filterEpisodeId.value,
+      workflowGroups: workflowGroups.value,
+      imagesBySbId: imagesBySbId.value,
+      videosBySbId: videosBySbId.value,
+    })
+    nodes.value = nodes.value.map((n) => {
+      const pos = positions[n.id]
+      return pos ? { ...n, position: { x: pos.x, y: pos.y } } : n
+    })
+    layoutCache.value = {
+      version: 1,
+      nodes: { ...positions },
+      viewport: layoutCache.value?.viewport,
+    }
+    await nextTick()
+    const flowApi = canvasFlowApi.value
+    if (flowApi?.fitView) {
+      await flowApi.fitView({
+        padding: 0.14,
+        duration: 380,
+        includeHiddenNodes: false,
+      })
+      await new Promise((r) => setTimeout(r, 400))
+      const vp = flowApi.getViewport?.()
+      if (vp) {
+        currentViewport.value = { x: vp.x, y: vp.y, zoom: vp.zoom }
+      }
+    }
+    await persistCanvasState({ layoutOnly: true })
+    ElMessage.success('节点已按规则对齐并适配当前视图')
+  } catch (e) {
+    ElMessage.error(e?.message || '对齐失败')
+  } finally {
+    aligningNodes.value = false
   }
 }
 
@@ -563,13 +853,25 @@ function onNodeDoubleClick({ node }) {
   if (ref?.storyboardId) navigateToStoryboard(ref.episodeId, ref.storyboardId)
 }
 
-function onPaneClick() {
+function onPaneClick(event) {
+  if (paneClickSuppressed.value) return
+  const target = event?.event?.target || event?.target
+  if (target?.closest?.('.canvas-node-panel') || target?.closest?.('.el-popper') || target?.closest?.('.canvas-context-menu')) {
+    return
+  }
   focusedNodeId.value = null
+  closeContextMenu()
 }
 
-function onNodeClick({ node }) {
+function onNodeClick({ node, event }) {
+  if (node.type === 'canvasAddButton') {
+    event?.stopPropagation?.()
+    openCreateDialog(node.data?.assetType || 'storyboard')
+    return
+  }
+
   if (PANEL_NODE_TYPES.has(node.type)) {
-    focusedNodeId.value = focusedNodeId.value === node.id ? null : node.id
+    focusedNodeId.value = node.id
   }
 
   if (node.type === 'canvasAsset') {
@@ -604,6 +906,7 @@ watch(drama, () => startStatusPoll())
 onBeforeUnmount(() => {
   if (saveTimer) clearTimeout(saveTimer)
   if (savedHintTimer) clearTimeout(savedHintTimer)
+  if (paneClickSuppressTimer) clearTimeout(paneClickSuppressTimer)
   stopStatusPoll()
   if (layoutDirty.value) persistCanvasState({ layoutOnly: true })
 })
@@ -655,6 +958,35 @@ onBeforeUnmount(() => {
   padding: 0 20px 8px;
   font-size: 12px;
   color: #60a5fa;
+}
+
+.workflow-progress.episode-gen {
+  color: #34d399;
+}
+
+.generate-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px 10px;
+  flex-wrap: wrap;
+  border-top: 1px solid rgba(63, 63, 70, 0.35);
+  margin-top: 2px;
+  padding-top: 8px;
+}
+
+.gen-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #a1a1aa;
+  margin-right: 4px;
+}
+
+.gen-hint {
+  font-size: 11px;
+  color: #52525b;
+  flex: 1;
+  min-width: 200px;
 }
 
 .logo {
@@ -724,11 +1056,28 @@ onBeforeUnmount(() => {
 }
 
 .sidebar-section { margin-bottom: 14px; }
+.sidebar-script {
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border-color, #27272a);
+}
+.sidebar-script-tip {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-subtle, #71717a);
+}
 
 .sec-label {
   font-size: 11px;
   color: var(--text-subtle, #71717a);
   margin-bottom: 6px;
+}
+
+.sec-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .sidebar-item {

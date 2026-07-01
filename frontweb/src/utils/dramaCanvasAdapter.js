@@ -12,6 +12,7 @@ import {
 } from './storyboardMedia'
 
 const ASSET_X = 48
+const SCRIPT_OFFSET_X = 248
 const ASSET_SECTION_GAP = 36
 const ASSET_ROW_H = 188
 const PIPELINE_X = 360
@@ -23,6 +24,7 @@ const MEDIA_GAP_X = 188
 const SB_PIPELINE_WIDTH = MEDIA_OFFSET_X + 5 * MEDIA_GAP_X + 200
 
 const ASSET_EDGE_STYLE = { stroke: '#34d399', strokeWidth: 1.5, strokeDasharray: '6 4' }
+const SCRIPT_EDGE_STYLE = { stroke: '#fbbf24', strokeWidth: 2, strokeDasharray: '8 4' }
 const PIPELINE_EDGE_STYLE = { stroke: '#818cf8', strokeWidth: 2 }
 const CHAIN_EDGE_STYLE = { stroke: '#a78bfa', strokeWidth: 1.5, strokeDasharray: '4 3' }
 
@@ -46,7 +48,7 @@ function storyboardSummary(sb) {
     return truncate(sb.universal_segment_text, 90)
   }
   const parts = [sb.action, sb.dialogue, sb.result].filter(Boolean)
-  return truncate(parts.join(' · '), 90) || truncate(sb.description, 90) || '暂无描述'
+  return truncate(parts.join(' · '), 90) || truncate(sb.description, 90) || '暂无脚本内容'
 }
 
 function sectionLabel(id, label, x, y) {
@@ -62,8 +64,9 @@ function sectionLabel(id, label, x, y) {
 }
 
 function makeNode(base) {
-  const draggable = base.type !== 'canvasLabel'
-  return { ...base, draggable: base.draggable ?? draggable }
+  const fixed = base.type === 'canvasLabel' || base.type === 'canvasAddButton'
+  const draggable = base.draggable ?? !fixed
+  return { ...base, draggable }
 }
 
 function buildAssetNodes(drama, savedLayout, startY) {
@@ -72,14 +75,13 @@ function buildAssetNodes(drama, savedLayout, startY) {
   let y = startY
 
   const sections = [
-    { key: 'characters', label: '👤 角色', items: drama.characters || [], kind: 'character', prefix: 'char' },
-    { key: 'scenes', label: '🏞 场景', items: drama.scenes || [], kind: 'scene', prefix: 'scene' },
-    { key: 'props', label: '🎭 道具', items: drama.props || [], kind: 'prop', prefix: 'prop' },
+    { key: 'characters', label: '👤 角色', hint: '从剧本提取', items: drama.characters || [], kind: 'character', prefix: 'char' },
+    { key: 'scenes', label: '🏞 场景', hint: '从剧本提取', items: drama.scenes || [], kind: 'scene', prefix: 'scene' },
+    { key: 'props', label: '🎭 道具', hint: '从剧本提取', items: drama.props || [], kind: 'prop', prefix: 'prop' },
   ]
 
   for (const sec of sections) {
-    if (!sec.items.length) continue
-    nodes.push(sectionLabel(`label:${sec.key}`, sec.label, ASSET_X, y))
+    nodes.push(sectionLabel(`label:${sec.key}`, `${sec.label} ${sec.items.length} · ${sec.hint}`, ASSET_X, y))
     y += 36
     for (const item of sec.items) {
       const id = `${sec.prefix}:${item.id}`
@@ -91,7 +93,17 @@ function buildAssetNodes(drama, savedLayout, startY) {
       }))
       y += ASSET_ROW_H
     }
-    y += ASSET_SECTION_GAP
+    const addId = `add:${sec.kind}`
+    nodes.push(makeNode({
+      id: addId,
+      type: 'canvasAddButton',
+      position: resolveNodePosition(savedLayout, addId, { x: ASSET_X, y }),
+      data: { assetType: sec.kind, label: '+ 新建' },
+      draggable: false,
+      selectable: false,
+      connectable: false,
+    }))
+    y += 72 + ASSET_SECTION_GAP
   }
 
   return { nodes, edges, nextY: y }
@@ -158,14 +170,29 @@ function buildEpisodePipeline(episode, savedLayout, startY, options = {}) {
   const imagesBySbId = options.imagesBySbId || {}
   const videosBySbId = options.videosBySbId || {}
   const useFirstLastFrame = options.useFirstLastFrame ?? false
-  if (!storyboards.length) return { nodes, edges, nextY: startY + 120 }
 
   const epId = `episode:${episode.id}`
+  const scriptId = `script:${episode.id}`
+  nodes.push(makeNode({
+    id: scriptId,
+    type: 'canvasScript',
+    position: resolveNodePosition(savedLayout, scriptId, { x: PIPELINE_X - SCRIPT_OFFSET_X, y: startY }),
+    data: {
+      episode,
+      summary: truncate(episode.script_content, 96) || '',
+    },
+  }))
   nodes.push(makeNode({
     id: epId,
     type: 'canvasEpisode',
     position: resolveNodePosition(savedLayout, epId, { x: PIPELINE_X, y: startY }),
     data: { episode },
+  }))
+  edges.push(makeEdge({
+    id: `e-script-${episode.id}-ep`,
+    source: scriptId,
+    target: epId,
+    style: SCRIPT_EDGE_STYLE,
   }))
 
   const rowYBase = startY + 56
@@ -331,8 +358,20 @@ function buildEpisodePipeline(episode, savedLayout, startY, options = {}) {
     prevSbId = sbId
   })
 
+  const addSbId = `add:storyboard:${episode.id}`
+  const addY = rowYBase + storyboards.length * SB_GAP_Y
+  nodes.push(makeNode({
+    id: addSbId,
+    type: 'canvasAddButton',
+    position: resolveNodePosition(savedLayout, addSbId, { x: PIPELINE_X, y: addY }),
+    data: { assetType: 'storyboard', label: '+ 新建分镜', episodeId: episode.id },
+    draggable: false,
+    selectable: false,
+    connectable: false,
+  }))
+
   const rowWidth = SB_PIPELINE_WIDTH
-  const nextY = rowYBase + storyboards.length * SB_GAP_Y + EPISODE_ROW_GAP
+  const nextY = addY + 120 + EPISODE_ROW_GAP
   return { nodes, edges, nextY, rowWidth }
 }
 
@@ -384,7 +423,7 @@ export function buildDramaCanvasGraph(drama, options = {}) {
   }
 
   if (!episodes.length) {
-    nodes.push(sectionLabel('label:empty', '暂无剧集数据，请先在列表模式创建剧本与分镜', PIPELINE_X, pipelineY))
+    nodes.push(sectionLabel('label:empty', '暂无剧集，可点顶栏「+ 集」或右键空白处新建', PIPELINE_X, pipelineY))
   }
 
   return {
@@ -392,7 +431,7 @@ export function buildDramaCanvasGraph(drama, options = {}) {
     edges,
     savedLayout,
     bounds: {
-      width: Math.max(maxPipelineX + 200, 1200),
+      width: Math.max(maxPipelineX + SCRIPT_OFFSET_X + 200, 1200),
       height: Math.max(pipelineY + 80, assetBlock.nextY, 600),
     },
   }
@@ -485,4 +524,23 @@ export function applyCanvasHighlight(nodes, edges, highlightNodeId, drama) {
 /** 为边附加 _baseStyle 便于高亮恢复 */
 export function stampEdgeBaseStyles(edges) {
   return edges.map((e) => ({ ...e, _baseStyle: e.style ? { ...e.style } : undefined }))
+}
+
+/**
+ * 按默认网格规则计算全部节点坐标（忽略已保存的手动位置）
+ * @returns {{ positions: Record<string, {x:number,y:number}>, bounds: object }}
+ */
+export function computeAutoLayoutPositions(drama, options = {}) {
+  const emptyLayout = { version: 1, nodes: {} }
+  const graph = buildDramaCanvasGraph(drama, {
+    ...options,
+    savedLayout: emptyLayout,
+  })
+  const positions = {}
+  for (const node of graph.nodes) {
+    if (node?.id && node.position) {
+      positions[node.id] = { x: node.position.x, y: node.position.y }
+    }
+  }
+  return { positions, bounds: graph.bounds }
 }

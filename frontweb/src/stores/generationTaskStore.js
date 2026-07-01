@@ -18,10 +18,13 @@ export const GEN_RESOURCE = {
   EXTRACT_PROPS: 'extract_props',
   EXTRACT_SCENES: 'extract_scenes',
   GENERATE_STORYBOARD: 'generate_storyboard',
+  GENERATE_STORY: 'generate_story',
 }
 
 /** 超过此时间仍为 running 且无进展则自动清理（毫秒） */
 const STALE_TASK_MS = 30 * 60 * 1000
+/** 后端任务 updated_at 长时间不变，视为重启后僵尸任务（毫秒） */
+const ORPHAN_PROCESSING_MS = 10 * 60 * 1000
 
 const LAST_FRAME_TYPES = new Set(['last', 'storyboard_last', 'tail', 'last_frame'])
 const FIRST_FRAME_TYPES = new Set(['first', 'storyboard_first', 'head', 'first_frame'])
@@ -49,6 +52,16 @@ function sbImageResourceType(frameType) {
 function isActiveTaskStatus(status) {
   return status === 'pending' || status === 'processing' || status === 'running'
 }
+
+function isOrphanedProcessingTask(remote, staleMs = ORPHAN_PROCESSING_MS) {
+  if (!remote || !isActiveTaskStatus(remote.status)) return false
+  const updatedAt = remote.updated_at ? new Date(remote.updated_at).getTime() : 0
+  if (!updatedAt) return false
+  return Date.now() - updatedAt > staleMs
+}
+
+const ORPHAN_TASK_MSG = '任务长时间无进展，可能因服务重启而中断，请重新操作'
+const USER_CANCEL_TASK_MSG = '用户已取消'
 
 function taskFailMessage(t) {
   if (!t) return '任务失败'
@@ -157,6 +170,23 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     markFailed({ taskId }, reason || '任务已停止')
   }
 
+  /** 取消任务：通知后端并停止前端轮询 */
+  async function cancelTask(meta, options = {}) {
+    const reason = options.reason || USER_CANCEL_TASK_MSG
+    const taskId = typeof meta === 'string' ? meta : meta?.taskId
+    if (taskId) {
+      try {
+        await taskAPI.cancel(taskId, { reason })
+      } catch (e) {
+        console.warn('[generationTaskStore] cancel API failed:', e?.message)
+      }
+      stopPollingTask(taskId, reason)
+      return
+    }
+    const key = typeof meta === 'string' ? meta : taskKey(meta)
+    markFailed(key, reason)
+  }
+
   /** 清除所有 running 任务（页面级兜底） */
   function clearAllRunningTasks(reason) {
     for (const t of [...runningTasks.value]) {
@@ -192,6 +222,10 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
           }
           if (!isActiveTaskStatus(remote.status)) {
             markDone(t)
+            continue
+          }
+          if (isOrphanedProcessingTask(remote)) {
+            markFailed(t, ORPHAN_TASK_MSG)
           }
         } catch (_) {
           // 网络异常跳过，下次 reconcile 再试
@@ -242,6 +276,14 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         attempts++
         try {
           const t = await taskAPI.get(taskId)
+          if (isOrphanedProcessingTask(t)) {
+            const errMsg = ORPHAN_TASK_MSG
+            markFailed(key, errMsg)
+            if (showErrorToast && options.ElMessage) {
+              options.ElMessage.warning(errMsg)
+            }
+            return resolve({ status: 'failed', error: errMsg })
+          }
           if (t.status === 'completed') {
             if (onDone) {
               try {
@@ -305,6 +347,10 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
 
     try {
       const t = await taskAPI.get(taskId)
+      if (isOrphanedProcessingTask(t)) {
+        markFailed({ ...meta, taskId }, ORPHAN_TASK_MSG)
+        return { status: 'failed', error: ORPHAN_TASK_MSG }
+      }
       if (t.status === 'completed') {
         if (onDone) await onDone()
         markDone({ ...meta, taskId })
@@ -530,6 +576,25 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
         break
       }
 
+      for (const t of dramaTasks || []) {
+        if (!isActiveTaskStatus(t.status)) continue
+        if (t.type !== 'story_generation') continue
+        if (recoveredTaskIds.value.has(t.id)) continue
+        if (pollPromises.value.has(t.id)) continue
+        const meta = {
+          dramaId,
+          episodeId,
+          dramaTitle,
+          episodeNumber,
+          resourceType: GEN_RESOURCE.GENERATE_STORY,
+          resourceId: Number(dramaId),
+          label: `${dramaTitle || '项目'} 生成剧本`,
+          taskId: t.id,
+        }
+        _recoverAttachTask(t.id, meta, () => callbacks.onDramaRefresh?.(), pollOpts)
+        break
+      }
+
       const attachResourceTask = (resourceId, resourceType, label) => {
         return taskAPI.listByResource(String(resourceId)).then((tasks) => {
           for (const t of tasks || []) {
@@ -585,6 +650,7 @@ export const useGenerationTaskStore = defineStore('generationTask', () => {
     recoverPendingForEpisode,
     reconcileRunningTasks,
     stopPollingTask,
+    cancelTask,
     clearAllRunningTasks,
     taskKey,
   }

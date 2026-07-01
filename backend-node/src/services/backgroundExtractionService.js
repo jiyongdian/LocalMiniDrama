@@ -184,10 +184,22 @@ function extractBackgroundsForEpisode(db, cfg, log, episodeId, model, style, lan
       }
     } catch (_) {}
   }
+  const existing = db.prepare(
+    `SELECT id FROM async_tasks
+     WHERE resource_id = ? AND type = 'background_extraction'
+       AND status IN ('pending', 'processing') AND deleted_at IS NULL
+     ORDER BY created_at DESC LIMIT 1`
+  ).get(String(episodeId));
+  if (existing) {
+    log.info('Background extraction already running', { task_id: existing.id, episode_id: episodeId });
+    return existing.id;
+  }
+
   const task = taskService.createTask(db, log, 'background_extraction', String(episodeId));
   setImmediate(() => {
     processBackgroundExtraction(db, runCfg, log, task.id, episodeId, model, style, language).catch((err) => {
       log.error('processBackgroundExtraction fatal', { error: err.message, task_id: task.id });
+      taskService.updateTaskError(db, task.id, err.message || '场景提取失败');
     });
   });
   return task.id;

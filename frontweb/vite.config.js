@@ -15,7 +15,9 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:5679',
-        changeOrigin: true
+        changeOrigin: true,
+        proxyTimeout: 600000,
+        timeout: 600000
       },
       '/static': {
         target: 'http://127.0.0.1:5679',

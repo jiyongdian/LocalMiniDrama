@@ -4,6 +4,7 @@
       <template #title>
         <span>
           对接 BytePlus ModelArk / 火山方舟<strong>私有资产库</strong>（Seedance 2.0 等使用的 <code>Asset://</code> 素材）。
+          配置完成后请点击下方<strong>「保存到 AI 配置」</strong>，创作页「SD2认证」将优先使用「即梦2角色认证」；若未配置则使用此处保存的官方资产库配置。
           官方流程：<a href="https://docs.byteplus.com/en/docs/ModelArk/2318270" target="_blank" rel="noopener">CreateAssetGroup</a>
           → CreateAsset → List / Get / Update / Delete。
           带 <code>?Action=</code> 的接口为<strong>控制面 OpenAPI</strong>，须使用控制台
@@ -86,6 +87,24 @@
             :value="c.id"
           />
         </el-select>
+      </el-form-item>
+      <el-form-item label="默认资产组 Id">
+        <el-input
+          v-model="assetGroupIdForCert"
+          placeholder="创作页 SD2 认证写入此组；可左侧点选资产组自动填入"
+          clearable
+        />
+        <p class="field-hint">保存到 AI 配置时必填。与下方「资产」列表使用的组 Id 一致。</p>
+      </el-form-item>
+      <el-form-item label=" ">
+        <div class="sd2-save-row">
+          <el-button type="primary" :loading="savingConfig" @click="saveToAiConfig">
+            保存到 AI 配置
+          </el-button>
+          <span v-if="savedConfigId" class="sd2-saved-hint">
+            已关联配置 #{{ savedConfigId }}（创作页 SD2 认证在未配置「即梦2角色认证」时使用）
+          </span>
+        </div>
       </el-form-item>
     </el-form>
 
@@ -235,7 +254,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { aiAPI } from '@/api/ai'
 
@@ -243,6 +262,8 @@ const props = defineProps({
   /** AI 配置列表（与 AI 配置页同源），用于一键填入 Base / Key */
   configs: { type: Array, default: () => [] },
 })
+
+const emit = defineEmits(['saved'])
 
 const baseUrl = ref('')
 const apiKey = ref('')
@@ -257,6 +278,10 @@ const signRegion = ref('')
 /** 仅合并到 List / Create 类请求，避免影响 Get/Update/Delete */
 const billingModel = ref('')
 const fillConfigId = ref(null)
+const savedConfigId = ref(null)
+const savingConfig = ref(false)
+/** 创作页 SD2 认证默认写入的资产组 */
+const assetGroupIdForCert = ref('')
 const loadingGroups = ref(false)
 const loadingAssets = ref(false)
 const dlgLoading = ref(false)
@@ -305,6 +330,115 @@ const videoLikeConfigs = computed(() => {
   })
 })
 
+const savedModelArkConfigs = computed(() => {
+  return (props.configs || []).filter((c) => c.service_type === 'model_ark_asset')
+})
+
+function parseSettingsJson(raw) {
+  if (!raw) return {}
+  if (typeof raw === 'object') return raw
+  try {
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch (_) {
+    return {}
+  }
+}
+
+function loadFromSavedRow(row) {
+  if (!row) return
+  savedConfigId.value = row.id
+  baseUrl.value = (row.base_url || '').replace(/\/$/, '')
+  apiKey.value = row.api_key || ''
+  const s = parseSettingsJson(row.settings)
+  authMode.value = s.auth_mode || 'volc_sign'
+  pathMode.value = s.path_mode || 'open_api_query'
+  apiVersion.value = s.api_version || '2024-01-01'
+  projectName.value = s.project_name || ''
+  billingModel.value = s.billing_model || ''
+  assetGroupIdForCert.value = s.asset_group_id || ''
+  accessKeyId.value = s.access_key_id || ''
+  secretAccessKey.value = s.secret_access_key || ''
+  signRegion.value = s.sign_region || ''
+  if (assetGroupIdForCert.value) assetGroupIdInput.value = assetGroupIdForCert.value
+}
+
+function applyDefaultSavedConfig() {
+  const rows = savedModelArkConfigs.value
+  if (!rows.length) return
+  const pick = rows.find((c) => c.is_default) || rows[0]
+  loadFromSavedRow(pick)
+}
+
+watch(
+  () => props.configs,
+  () => {
+    if (!savedConfigId.value) applyDefaultSavedConfig()
+    else {
+      const row = (props.configs || []).find((c) => c.id === savedConfigId.value)
+      if (row) loadFromSavedRow(row)
+    }
+  },
+  { immediate: true }
+)
+
+onMounted(() => {
+  applyDefaultSavedConfig()
+})
+
+async function saveToAiConfig() {
+  const w = connWarn()
+  if (!connReady() || w) {
+    ElMessage.warning(w || '请先完成连接信息')
+    return
+  }
+  if (!assetGroupIdForCert.value.trim()) {
+    ElMessage.warning('请填写默认资产组 Id（创作页 SD2 认证需要）')
+    return
+  }
+  const settings = {
+    auth_mode: authMode.value,
+    path_mode: pathMode.value,
+    api_version: apiVersion.value.trim() || '2024-01-01',
+    project_name: projectName.value.trim(),
+    billing_model: billingModel.value.trim(),
+    asset_group_id: assetGroupIdForCert.value.trim(),
+  }
+  if (authMode.value === 'volc_sign') {
+    settings.access_key_id = accessKeyId.value.trim()
+    settings.secret_access_key = secretAccessKey.value.trim()
+    if (signRegion.value.trim()) settings.sign_region = signRegion.value.trim()
+  }
+  const payload = {
+    service_type: 'model_ark_asset',
+    name: 'SD2 资产库',
+    provider: 'model_ark',
+    base_url: baseUrl.value.trim(),
+    api_key: authMode.value === 'bearer' ? apiKey.value : '',
+    model: ['-'],
+    default_model: '-',
+    priority: 10,
+    is_default: true,
+    settings: JSON.stringify(settings),
+  }
+  savingConfig.value = true
+  try {
+    if (savedConfigId.value) {
+      await aiAPI.update(savedConfigId.value, payload)
+      ElMessage.success('已更新 AI 配置')
+    } else {
+      const created = await aiAPI.create(payload)
+      savedConfigId.value = created?.id ?? null
+      ElMessage.success('已保存到 AI 配置')
+    }
+    emit('saved')
+  } catch (_) {
+    /* request 已统一报错 */
+  } finally {
+    savingConfig.value = false
+  }
+}
+
 function setLastJson(obj) {
   try {
     lastRawJson.value = JSON.stringify(obj, null, 2)
@@ -351,6 +485,7 @@ function onFillFromSaved(id) {
 function onGroupRowChange(row) {
   if (row && row.Id) {
     assetGroupIdInput.value = row.Id
+    if (!assetGroupIdForCert.value.trim()) assetGroupIdForCert.value = row.Id
   }
 }
 
@@ -697,5 +832,16 @@ async function deleteAsset(row) {
 .mono :deep(textarea) {
   font-family: Menlo, Consolas, monospace;
   font-size: 12px;
+}
+.sd2-save-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+.sd2-saved-hint {
+  font-size: 12px;
+  color: #67c23a;
+  line-height: 1.5;
 }
 </style>

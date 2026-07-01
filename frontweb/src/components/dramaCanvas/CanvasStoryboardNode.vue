@@ -1,10 +1,11 @@
 <template>
   <div class="canvas-node-stack">
-    <div class="canvas-sb-node" :class="{ selected: selected, highlighted: data.highlighted, dimmed: data.dimmed, processing: isProcessing, focused: showPanel }">
+    <div class="canvas-sb-node" :class="{ selected: selected, highlighted: data.highlighted, dimmed: data.dimmed, processing: isProcessing || isNodeBusy, focused: showPanel }">
     <Handle id="chain-in" type="target" :position="Position.Top" />
     <Handle type="target" :position="Position.Left" />
     <Handle type="source" :position="Position.Right" />
     <Handle id="chain-out" type="source" :position="Position.Bottom" />
+      <CanvasNodeStatusOverlay :node-id="id" />
       <div class="head">
         <span class="num">#{{ data.storyboard?.storyboard_number ?? data.index }}</span>
         <span v-if="data.workflowGroup?.title" class="wf-badge">{{ data.workflowGroup.title }}</span>
@@ -23,6 +24,7 @@
       v-if="showPanel"
       :storyboard="data.storyboard"
       :episode-id="data.episodeId"
+      :node-id="id"
     />
   </div>
 </template>
@@ -32,6 +34,7 @@ import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import CanvasStoryboardPanel from './CanvasStoryboardPanel.vue'
+import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
 
 const props = defineProps({
   id: { type: String, required: true },
@@ -49,6 +52,11 @@ const statusLabel = computed(() => {
 })
 
 const isProcessing = computed(() => props.data.storyboard?.status === 'processing')
+
+const isNodeBusy = computed(() => {
+  const map = ctx?.nodeStatus?.map
+  return map ? !!map[props.id] : false
+})
 </script>
 
 <style scoped>
@@ -58,6 +66,7 @@ const isProcessing = computed(() => props.data.storyboard?.status === 'processin
   align-items: flex-start;
 }
 .canvas-sb-node {
+  position: relative;
   width: 200px;
   padding: 12px 14px;
   border-radius: 12px;

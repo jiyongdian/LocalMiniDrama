@@ -74,6 +74,46 @@ function rowToTask(r) {
   };
 }
 
+const ORPHAN_ASYNC_TASK_MSG = '服务重启后任务中断，请重新操作';
+const USER_CANCEL_TASK_MSG = '用户已取消';
+
+/**
+ * 用户主动取消进行中的异步任务（无法中断已在执行的 AI 调用，但会停止前端轮询并防止恢复）。
+ */
+function cancelTask(db, log, taskId, reason) {
+  const task = getTask(db, taskId);
+  if (!task) return { ok: false, reason: 'not_found' };
+  if (task.status === 'completed' || task.status === 'failed') {
+    return { ok: true, already_done: true, task };
+  }
+  const msg = (reason || USER_CANCEL_TASK_MSG).toString().trim() || USER_CANCEL_TASK_MSG;
+  updateTaskError(db, taskId, msg);
+  log.info('Task cancelled by user', { task_id: taskId, type: task.type });
+  return { ok: true, task: getTask(db, taskId) };
+}
+
+/**
+ * 进程内 setImmediate 任务在重启后会丢失；启动时将遗留的 pending/processing 标为失败，避免前端无限轮询。
+ */
+function failOrphanedAsyncTasksOnStartup(db, log) {
+  const rows = db.prepare(
+    `SELECT id, type, status, resource_id FROM async_tasks
+     WHERE status IN ('pending', 'processing') AND deleted_at IS NULL`
+  ).all();
+  if (!rows.length) return 0;
+  log.warn('Failing orphaned async tasks after startup', { count: rows.length });
+  for (const row of rows) {
+    updateTaskError(db, row.id, ORPHAN_ASYNC_TASK_MSG);
+    log.info('Orphaned async task marked failed', {
+      task_id: row.id,
+      type: row.type,
+      resource_id: row.resource_id,
+      previous_status: row.status,
+    });
+  }
+  return rows.length;
+}
+
 module.exports = {
   createTask,
   getTask,
@@ -81,4 +121,8 @@ module.exports = {
   updateTaskStatus,
   updateTaskError,
   updateTaskResult,
+  failOrphanedAsyncTasksOnStartup,
+  cancelTask,
+  ORPHAN_ASYNC_TASK_MSG,
+  USER_CANCEL_TASK_MSG,
 };

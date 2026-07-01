@@ -1,6 +1,8 @@
 // 根据故事梗概 + 风格/类型/集数，调用文本模型生成扩展后的故事/剧本（JSON 数组格式）
 const aiClient = require('./aiClient');
 const promptI18n = require('./promptI18n');
+const taskService = require('./taskService');
+const dramaService = require('./dramaService');
 const { safeParseAIJSON } = require('../utils/safeJson');
 const loadConfig = require('../config').loadConfig;
 
@@ -90,6 +92,81 @@ async function generateStory(db, log, body) {
   };
 }
 
+async function processStoryGeneration(db, log, taskId, req) {
+  taskService.updateTaskStatus(db, taskId, 'processing', 10, '正在生成剧本...');
+  try {
+    const result = await generateStory(db, log, req);
+    const episodes = result?.episodes || [];
+    if (episodes.length === 0) {
+      taskService.updateTaskError(db, taskId, 'AI 未能生成剧本');
+      return;
+    }
+
+    const dramaId = Number(req.drama_id);
+    taskService.updateTaskStatus(db, taskId, 'processing', 75, '正在保存剧本...');
+
+    const saved = dramaService.saveEpisodes(db, log, dramaId, {
+      episodes: episodes.map((ep, i) => ({
+        episode_number: ep.episode ?? i + 1,
+        title: ep.title || `第${ep.episode ?? i + 1}集`,
+        script_content: ep.content || '',
+      })),
+    });
+    if (!saved) {
+      taskService.updateTaskError(db, taskId, '保存剧本失败：项目不存在');
+      return;
+    }
+
+    if (req.summary || req.genre || req.drama_style || req.metadata || req.title) {
+      dramaService.saveOutline(db, log, dramaId, {
+        title: req.title,
+        summary: req.summary,
+        genre: req.genre,
+        style: req.drama_style,
+        metadata: req.metadata,
+      });
+    }
+
+    taskService.updateTaskResult(db, taskId, {
+      drama_id: dramaId,
+      episode_count: episodes.length,
+    });
+    log.info('Story generation completed and saved', { task_id: taskId, drama_id: dramaId, episode_count: episodes.length });
+  } catch (err) {
+    log.error('processStoryGeneration failed', { task_id: taskId, error: err.message });
+    taskService.updateTaskError(db, taskId, err.message || '故事生成失败');
+  }
+}
+
+function startStoryGeneration(db, log, req) {
+  const dramaId = String(req.drama_id || '');
+  if (!dramaId) throw new Error('drama_id 必填');
+  if (!dramaService.getDramaById(db, Number(dramaId))) {
+    throw new Error('项目不存在');
+  }
+
+  const existing = db.prepare(
+    `SELECT id FROM async_tasks
+     WHERE resource_id = ? AND type = 'story_generation'
+       AND status IN ('pending', 'processing') AND deleted_at IS NULL
+     ORDER BY created_at DESC LIMIT 1`
+  ).get(dramaId);
+  if (existing) {
+    log.info('Story generation already running', { task_id: existing.id, drama_id: dramaId });
+    return existing.id;
+  }
+
+  const task = taskService.createTask(db, log, 'story_generation', dramaId);
+  setImmediate(() => {
+    processStoryGeneration(db, log, task.id, req).catch((err) => {
+      log.error('processStoryGeneration fatal', { error: err.message, task_id: task.id });
+      taskService.updateTaskError(db, task.id, err.message || '故事生成失败');
+    });
+  });
+  return task.id;
+}
+
 module.exports = {
   generateStory,
+  startStoryGeneration,
 };

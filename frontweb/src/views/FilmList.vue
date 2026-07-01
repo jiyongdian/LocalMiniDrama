@@ -757,18 +757,19 @@ function openProject(id) {
   router.push('/drama/' + id)
 }
 
-async function onExport(d) {
+function onExport(d) {
   if (exportingId.value) return
   exportingId.value = d.id
   try {
-    const blob = await dramaAPI.exportDrama(d.id)
-    const url = URL.createObjectURL(blob instanceof Blob ? blob : new Blob([blob], { type: 'application/zip' }))
+    // 大 ZIP 用浏览器原生下载，避免 axios blob 经 dev proxy 整包缓冲导致 ERR_FAILED
     const a = document.createElement('a')
-    a.href = url
+    a.href = `/api/v1/dramas/${d.id}/export`
     a.download = `${d.title || 'drama'}.zip`
+    a.rel = 'noopener'
+    document.body.appendChild(a)
     a.click()
-    URL.revokeObjectURL(url)
-    ElMessage.success('导出成功')
+    document.body.removeChild(a)
+    ElMessage.success('开始下载')
   } catch (e) {
     ElMessage.error(e.message || '导出失败')
   } finally {

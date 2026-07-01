@@ -47,7 +47,7 @@ export function resolveViewport(savedLayout, fallback = { x: 0, y: 0, zoom: 0.75
   return fallback
 }
 
-const NON_DRAGGABLE_TYPES = new Set(['canvasLabel'])
+const NON_DRAGGABLE_TYPES = new Set(['canvasLabel', 'canvasAddButton'])
 
 /** 从当前 Vue Flow 节点与视口构建可持久化的 canvas_layout */
 export function buildCanvasLayoutPayload(flowNodes, viewport, existingLayout = null) {

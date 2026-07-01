@@ -120,41 +120,47 @@
       </div>
 
       <!-- 当前任务面板 -->
-      <div v-if="allActiveTasks.length > 0" class="atp-panel">
+      <div v-if="allActiveTaskItems.length > 0" class="atp-panel">
         <!-- 折叠态：只显示旋转点和数量 -->
-        <div v-if="navCollapsed" class="atp-collapsed-badge" :title="allActiveTasks.join('\n')">
+        <div v-if="navCollapsed" class="atp-collapsed-badge" :title="allActiveTaskLabels.join('\n')">
           <span class="atp-spin-dot" />
-          <span class="atp-collapsed-count">{{ allActiveTasks.length }}</span>
+          <span class="atp-collapsed-count">{{ allActiveTaskItems.length }}</span>
         </div>
         <!-- 展开态：标题 + 任务列表 -->
         <template v-else>
           <div class="atp-header">
             <span class="atp-spin-dot" />
             <span class="atp-title">进行中</span>
-            <span class="atp-count-badge">{{ allActiveTasks.length }}</span>
+            <span class="atp-count-badge">{{ allActiveTaskItems.length }}</span>
           </div>
           <div class="atp-list">
-            <el-tooltip
-              v-for="(label, i) in allActiveTasks.slice(0, 8)"
-              :key="i"
-              :content="label"
-              placement="right"
-              :show-after="200"
-              :enterable="false"
+            <div
+              v-for="item in allActiveTaskItems.slice(0, 8)"
+              :key="item.id"
+              class="atp-item"
             >
-              <div class="atp-item">
-                <span class="atp-item-dot" />
-                <span class="atp-item-label">{{ label }}</span>
-              </div>
-            </el-tooltip>
+              <span class="atp-item-dot" />
+              <el-tooltip :content="item.label" placement="right" :show-after="300" :enterable="false">
+                <span class="atp-item-label">{{ item.label }}</span>
+              </el-tooltip>
+              <button
+                type="button"
+                class="atp-item-close"
+                title="取消任务"
+                aria-label="取消任务"
+                @click.stop="cancelActiveTask(item)"
+              >
+                <el-icon :size="12"><Close /></el-icon>
+              </button>
+            </div>
             <el-tooltip
-              v-if="allActiveTasks.length > 8"
-              :content="allActiveTasks.slice(8).join('\n')"
+              v-if="allActiveTaskItems.length > 8"
+              :content="allActiveTaskItems.slice(8).map((t) => t.label).join('\n')"
               placement="right"
               :show-after="200"
             >
               <div class="atp-more">
-                还有 {{ allActiveTasks.length - 8 }} 个任务...
+                还有 {{ allActiveTaskItems.length - 8 }} 个任务...
               </div>
             </el-tooltip>
           </div>
@@ -214,7 +220,7 @@
                     <el-option label="生成 5 集" :value="5" />
                     <el-option label="生成 6 集" :value="6" />
                   </el-select>
-                  <el-button type="primary" :loading="storyGenerating" @click="onGenerateStory">
+                  <el-button type="primary" :loading="isStoryGenRunning" @click="onGenerateStory">
                     生成剧本
                   </el-button>
                   <el-button plain @click="showNovelImport = true">
@@ -1454,13 +1460,13 @@
                 >
                   {{ getSbVideoError(sb.id) || '视频地址无效，请重新生成' }}
                 </div>
-                <span v-if="generatingSbVideoIds.has(sb.id)" class="sb-video-regenerating-overlay">
+                <span v-if="isSbVideoGenerating(sb.id)" class="sb-video-regenerating-overlay">
                   <el-icon class="is-loading"><Loading /></el-icon>
                   正在重新生成...
                 </span>
               </div>
               <div v-else class="sb-video-area sb-video-placeholder">
-                <span v-if="generatingSbVideoIds.has(sb.id)" class="sb-video-generating-text">
+                <span v-if="isSbVideoGenerating(sb.id)" class="sb-video-generating-text">
                   <el-icon class="is-loading"><Loading /></el-icon>
                   正在生成视频...
                 </span>
@@ -1472,8 +1478,8 @@
                     type="primary"
                     size="small"
                     class="sb-generate-video-btn"
-                    :loading="generatingSbVideoIds.has(sb.id)"
-                    :disabled="!sbCanSubmitVideo(sb)"
+                    :loading="isSbVideoGenerating(sb.id)"
+                    :disabled="!sbCanSubmitVideo(sb) || isSbVideoGenerating(sb.id)"
                     @click="onGenerateSbVideo(sb)"
                   >
                     生成分镜视频
@@ -1497,7 +1503,7 @@
                 </div>
               </div>
               <div v-if="getSbVideo(sb.id)" class="sb-video-actions">
-                <el-button size="small" :loading="generatingSbVideoIds.has(sb.id)" :disabled="!sbCanSubmitVideo(sb)" @click="onGenerateSbVideo(sb)">重新生成</el-button>
+                <el-button size="small" :loading="isSbVideoGenerating(sb.id)" :disabled="!sbCanSubmitVideo(sb) || isSbVideoGenerating(sb.id)" @click="onGenerateSbVideo(sb)">重新生成</el-button>
                 <el-tooltip v-if="getNextStoryboard(sb.id)" content="提取本视频尾帧，设为下一个分镜的首帧" placement="top">
                   <el-button size="small" :loading="linkingTailFrameIds.has(sb.id)" @click="onLinkTailFrameToNext(sb)">尾帧衔接</el-button>
                 </el-tooltip>
@@ -1592,7 +1598,7 @@
             </div>
           </el-form-item>
         </div>
-        <p class="config-tip">文本/图片/视频使用的模型以「<el-link type="primary" :underline="false" @click="showAiConfigDialog = true">AI 配置</el-link>」中设为默认的为准。</p>
+        <p class="config-tip">文本/图片/视频使用的模型以「<el-link type="primary" underline="never" @click="showAiConfigDialog = true">AI 配置</el-link>」中设为默认的为准。</p>
       </section>
 
       <!-- 8. 合成视频 -->
@@ -2601,7 +2607,7 @@ import { ref, computed, onMounted, onBeforeUnmount, watch, reactive, nextTick } 
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Setting, Plus, Minus, Sunny, Moon, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold, VideoPlay, Grid } from '@element-plus/icons-vue'
+import { ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Setting, Plus, Minus, Sunny, Moon, MagicStick, Upload, Delete, Check, Loading, WarningFilled, User, Box, Picture, Film, VideoCamera, Document, InfoFilled, Refresh, ZoomIn, QuestionFilled, DocumentAdd, Expand, Fold, VideoPlay, Grid, Close } from '@element-plus/icons-vue'
 import { useTheme } from '@/composables/useTheme'
 import { useFilmStore } from '@/stores/film'
 import { useGenerationTaskStore, GEN_RESOURCE } from '@/stores/generationTaskStore'
@@ -2699,6 +2705,12 @@ const savedCurrentEpisodeNumber = ref(1)
 const scriptLanguage = ref('zh')
 const scriptStoryboardStyle = ref('')
 const scriptGenerating = ref(false)
+const isStoryGenRunning = computed(() => {
+  if (storyGenerating.value || scriptGenerating.value) return true
+  return genStore.getAllRunningTasks().some(
+    (t) => Number(t.dramaId) === Number(dramaId.value) && t.resourceType === GEN_RESOURCE.GENERATE_STORY
+  )
+})
 const generationStyle = ref('')
 const projectAspectRatio = ref('16:9')
 const videoClipDuration = ref(5)
@@ -2777,6 +2789,7 @@ const storyboardGenerating = computed(() =>
 )
 /** 分镜批量生成结束后，按镜序逐个润色全能片段（仅勾选全能模式且各镜为 universal 且有正文时） */
 const universalOmniPolishRunning = ref(false)
+const universalOmniPolishAbort = ref(false)
 const universalOmniPolishProgress = ref({ current: 0, total: 0, label: '' })
 const sbTruncatedWarning = ref(false)
 const sbTruncatedDismissed = ref(false)
@@ -2784,6 +2797,7 @@ const videoErrorMsg = ref('')
 // 一键全流程流水线
 const pipelineRunning = ref(false)
 const pipelinePaused = ref(false)
+const pipelineAbortRequested = ref(false)
 const pipelineErrorLog = ref([])
 const pipelineCurrentStep = ref('')
 const pipelineStepIndex = ref(0)    // 当前步骤序号（1-based）
@@ -2975,7 +2989,7 @@ const navSteps = computed(() => {
   const epRunning = genStore.getRunningForEpisode(dramaId.value, currentEpisodeId.value)
   // 剧本
   const hasScript = !!(scriptContent?.value?.trim())
-  const scriptStatus = (storyGenerating.value || scriptGenerating.value)
+  const scriptStatus = isStoryGenRunning.value
     ? 'generating'
     : hasScript ? 'done' : 'pending'
 
@@ -3034,34 +3048,101 @@ const navSteps = computed(() => {
   ]
 })
 
-/** 聚合所有当前正在运行的任务标签，用于悬浮任务面板（含跨剧跨集） */
-const allActiveTasks = computed(() => {
-  const tasks = []
+/** 聚合所有当前正在运行的任务，用于悬浮任务面板（含跨剧跨集） */
+const allActiveTaskItems = computed(() => {
+  const items = []
   const seen = new Set()
-  function addTask(label) {
-    const s = (label || '').trim()
-    if (!s || seen.has(s)) return
-    seen.add(s)
-    tasks.push(s)
+  function addItem(item) {
+    const id = item.id || item.label
+    if (!id || seen.has(id)) return
+    seen.add(id)
+    items.push(item)
   }
   for (const t of genStore.getAllRunningTasks()) {
-    addTask(t.label)
+    addItem({
+      id: `gen:${t.key || t.taskId || t.label}`,
+      label: t.label || '任务进行中...',
+      kind: 'genStore',
+      task: t,
+    })
   }
-  // 一键全流程 pipeline
   if (pipelineRunning.value) {
     const step = pipelineCurrentStep.value
-    addTask(step ? step.replace(/^\[步骤 \d+\/\d+\] /, '') : '一键全流程运行中...')
+    addItem({
+      id: 'pipeline',
+      label: step ? step.replace(/^\[步骤 \d+\/\d+\] /, '') : '一键全流程运行中...',
+      kind: 'pipeline',
+    })
   }
-  // 整体操作
-  if (storyGenerating.value || scriptGenerating.value) addTask('生成剧本...')
+  if (isStoryGenRunning.value && !genStore.getAllRunningTasks().some((t) => t.resourceType === GEN_RESOURCE.GENERATE_STORY)) {
+    addItem({ id: 'story-gen-local', label: '生成剧本...', kind: 'storyGenLocal' })
+  }
   if (universalOmniPolishRunning.value) {
     const p = universalOmniPolishProgress.value
-    addTask(`润色全能分镜 ${p.current}/${p.total}${p.label ? ' ' + p.label : ''}`)
+    addItem({
+      id: 'universal-omni-polish',
+      label: `润色全能分镜 ${p.current}/${p.total}${p.label ? ' ' + p.label : ''}`,
+      kind: 'universalOmniPolish',
+    })
   }
-  if (batchImageRunning.value) addTask('批量生成分镜图...')
-  if (batchVideoRunning.value) addTask('批量生成分镜视频...')
-  return tasks
+  if (batchImageRunning.value) {
+    addItem({ id: 'batch-image', label: '批量生成分镜图...', kind: 'batchImage' })
+  }
+  if (batchVideoRunning.value) {
+    const p = batchVideoProgress.value
+    const suffix = p?.total ? ` ${p.current}/${p.total}` : ''
+    addItem({ id: 'batch-video', label: `批量生成分镜视频${suffix}...`, kind: 'batchVideo' })
+  }
+  return items
 })
+
+const allActiveTaskLabels = computed(() => allActiveTaskItems.value.map((t) => t.label))
+
+async function cancelActiveTask(item) {
+  if (!item) return
+  try {
+    if (item.kind === 'genStore' && item.task) {
+      await genStore.cancelTask(item.task)
+      ElMessage.success('任务已取消')
+      return
+    }
+    if (item.kind === 'pipeline') {
+      pipelineAbortRequested.value = true
+      pipelineRunning.value = false
+      pipelinePaused.value = false
+      for (const t of genStore.getAllRunningTasks()) {
+        if (t.taskId) await genStore.cancelTask(t)
+      }
+      ElMessage.success('已停止全流程')
+      return
+    }
+    if (item.kind === 'storyGenLocal') {
+      storyGenerating.value = false
+      scriptGenerating.value = false
+      const storyTask = genStore.getAllRunningTasks().find((t) => t.resourceType === GEN_RESOURCE.GENERATE_STORY)
+      if (storyTask) await genStore.cancelTask(storyTask)
+      ElMessage.success('已取消剧本生成')
+      return
+    }
+    if (item.kind === 'universalOmniPolish') {
+      universalOmniPolishAbort.value = true
+      ElMessage.success('正在停止润色...')
+      return
+    }
+    if (item.kind === 'batchImage') {
+      batchImageStopping.value = true
+      ElMessage.info('正在停止批量生图...')
+      return
+    }
+    if (item.kind === 'batchVideo') {
+      batchVideoStopping.value = true
+      ElMessage.info('正在停止批量生视频...')
+      return
+    }
+  } catch (e) {
+    ElMessage.error(e?.message || '取消失败')
+  }
+}
 const sbCharacterIds = ref({})  // sbId -> number[] 多选角色
 const sbPropIds = ref({})       // sbId -> number[] 多选物品
 const sbSceneId = ref({})
@@ -3742,6 +3823,18 @@ function buildSbGenMeta(sb, resourceType, labelPrefix) {
     resourceId: sb.id,
     label: `${epLabel} ${labelPrefix} #${num}`,
   }
+}
+
+/** 分镜视频是否正在生成（单条点击、批量、一键成片、任务恢复均覆盖） */
+function isSbVideoGenerating(sbId) {
+  if (generatingSbVideoIds.has(sbId)) return true
+  if (sbId == null || dramaId.value == null || currentEpisodeId.value == null) return false
+  return genStore.isRunning({
+    dramaId: dramaId.value,
+    episodeId: currentEpisodeId.value,
+    resourceType: GEN_RESOURCE.SB_VIDEO,
+    resourceId: sbId,
+  })
 }
 
 async function recoverAndSyncEpisodeTasks(epId) {
@@ -4882,9 +4975,10 @@ async function onGenerateStory() {
     savedCurrentEpisodeNumber,
     selectedEpisodeId,
     onEpisodeSelect,
-    storyGenerating,
-    scriptGenerating,
-    replaceRouteWhenNew: true,
+  storyGenerating,
+  scriptGenerating,
+  pollTask,
+  replaceRouteWhenNew: true,
     skipPostLoad: false,
     onComplete: ({ episodeCount }) => {
       trackFilmCreateAction('generate_script_complete', {
@@ -5865,10 +5959,12 @@ async function polishUniversalSegmentsAfterGeneration(opts = {}) {
   if (!targets.length) return { polished: 0, skipped: true }
 
   universalOmniPolishRunning.value = true
+  universalOmniPolishAbort.value = false
   universalOmniPolishProgress.value = { current: 0, total: targets.length, label: '' }
   let polished = 0
   try {
     for (let i = 0; i < targets.length; i++) {
+      if (universalOmniPolishAbort.value) break
       await checkPause()
       const sb = targets[i]
       const cur = i + 1
@@ -6820,6 +6916,7 @@ async function startBatchVideoGeneration() {
           continue
         }
         try {
+          generatingSbVideoIds.add(sb.id)
           // 批量生成时清除手动指定的视频，确保合成时使用最新生成记录
           storyboardsAPI.update(sb.id, { video_url: null }).catch(() => {})
           if (sbSelectedVideoId.value[sb.id] != null) {
@@ -6869,7 +6966,8 @@ async function startBatchVideoGeneration() {
             duration: getSbVideoDurationForApi(sb),
           })
           if (res?.task_id) {
-            const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id))
+            const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
+            const pollRes = await pollTask(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
             if (pollRes?.status === 'failed') {
               batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${pollRes.error || '生成失败'}`)
               batchVideoProgress.value = { ...batchVideoProgress.value, failed: batchVideoProgress.value.failed + 1 }
@@ -6890,6 +6988,8 @@ async function startBatchVideoGeneration() {
           batchVideoErrors.value.push(`#${sb.storyboard_number ?? sb.id}: ${e.message || '提交失败'}`)
           batchVideoProgress.value = { ...batchVideoProgress.value, failed: batchVideoProgress.value.failed + 1 }
           if (contiguity) prevVideoItem = null
+        } finally {
+          generatingSbVideoIds.delete(sb.id)
         }
         videoDoneCount++
         batchVideoProgress.value = { ...batchVideoProgress.value, current: videoDoneCount }
@@ -6985,8 +7085,8 @@ async function pollUntilResourceHasImage(checker, maxAttempts = 20, intervalMs =
   }
 }
 
-function pollTask(taskId, onDone, meta = {}) {
-  const resolvedMeta = {
+function resolvePollMeta(meta = {}) {
+  return {
     dramaId: meta.dramaId ?? dramaId.value,
     episodeId: meta.episodeId ?? currentEpisodeId.value,
     dramaTitle: meta.dramaTitle ?? store.drama?.title,
@@ -6996,16 +7096,34 @@ function pollTask(taskId, onDone, meta = {}) {
     label: meta.label,
     ...meta,
   }
-  return genStore.pollTask(taskId, resolvedMeta, onDone, { ElMessage })
+}
+
+function pollTask(taskId, onDone, meta = {}) {
+  return genStore.pollTask(taskId, resolvePollMeta(meta), onDone, { ElMessage })
 }
 
 /** 一键生成视频：暂停时等待，返回 { paused: true } 表示被暂停中断 */
-function pollTaskWithPause(taskId, onDone) {
+function pollTaskWithPause(taskId, onDone, meta = {}) {
+  const resolvedMeta = resolvePollMeta(meta)
+  const trackInStore = resolvedMeta.resourceType !== 'unknown' && resolvedMeta.resourceId != null
+  if (trackInStore && taskId) {
+    genStore.markRunning({ ...resolvedMeta, taskId })
+  }
   const maxAttempts = 450  // 450 × 2s = 15 分钟
   const interval = 2000
   let attempts = 0
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    const finishStore = (status, error) => {
+      if (!trackInStore || !taskId) return
+      if (status === 'completed') genStore.markDone({ ...resolvedMeta, taskId })
+      else genStore.markFailed({ ...resolvedMeta, taskId }, error || '任务失败')
+    }
     const tick = async () => {
+      if (pipelineAbortRequested.value) {
+        finishStore('failed', '全流程已取消')
+        reject(Object.assign(new Error('全流程已取消'), { pipelineAborted: true }))
+        return
+      }
       if (pipelinePaused.value) {
         resolve({ paused: true })
         return
@@ -7013,13 +7131,21 @@ function pollTaskWithPause(taskId, onDone) {
       attempts++
       try {
         const t = await taskAPI.get(taskId)
+        if (pipelineAbortRequested.value) {
+          finishStore('failed', '全流程已取消')
+          reject(Object.assign(new Error('全流程已取消'), { pipelineAborted: true }))
+          return
+        }
         if (t.status === 'completed') {
           if (onDone) await onDone()
-          resolve({ result: t.result })
+          finishStore('completed')
+          resolve({ status: 'completed', result: t.result })
           return
         }
         if (t.status === 'failed') {
-          resolve({ error: t.error || '任务失败' })
+          const errMsg = (t.error || t.message || '任务失败').trim()
+          finishStore('failed', errMsg)
+          resolve({ status: 'failed', error: errMsg })
           return
         }
       } catch (pollErr) {
@@ -7027,7 +7153,9 @@ function pollTaskWithPause(taskId, onDone) {
       }
       if (attempts < maxAttempts) setTimeout(tick, interval)
       else {
-        resolve({ error: '任务查询超时（超过15分钟）' })
+        const timeoutMsg = '任务查询超时（超过15分钟）'
+        finishStore('failed', timeoutMsg)
+        resolve({ status: 'timeout', error: timeoutMsg })
       }
     }
     setTimeout(tick, interval)
@@ -7054,7 +7182,13 @@ function addPipelineError(step, message) {
 }
 
 async function checkPause() {
+  if (pipelineAbortRequested.value) {
+    throw Object.assign(new Error('全流程已取消'), { pipelineAborted: true })
+  }
   while (pipelinePaused.value) {
+    if (pipelineAbortRequested.value) {
+      throw Object.assign(new Error('全流程已取消'), { pipelineAborted: true })
+    }
     await waitForResume()
   }
 }
@@ -7112,8 +7246,11 @@ async function startOneClickPipeline() {
   pipelineStepTotal.value = 10
   pipelineRunning.value = true
   pipelinePaused.value = false
+  pipelineAbortRequested.value = false
   try {
     await runOneClickPipeline(false)
+  } catch (e) {
+    if (!e?.pipelineAborted) throw e
   } finally {
     pipelineRunning.value = false
     pipelineActiveTasks.clear()
@@ -7129,8 +7266,11 @@ async function startTextFrameworkPipeline() {
   pipelineStepTotal.value = 4
   pipelineRunning.value = true
   pipelinePaused.value = false
+  pipelineAbortRequested.value = false
   try {
     await runOneClickPipeline(true)
+  } catch (e) {
+    if (!e?.pipelineAborted) throw e
   } finally {
     pipelineRunning.value = false
     pipelineActiveTasks.clear()
@@ -7523,7 +7663,8 @@ async function runOneClickPipeline(textOnly = false) {
               duration: getSbVideoDurationForApi(sb),
             })
             if (res?.task_id) {
-              const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
+              const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
+              const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
               if (result?.paused) return { paused: true }
               if (result?.error) throw new Error(result.error)
             } else await loadSingleStoryboardMedia(sb.id)
@@ -7834,38 +7975,44 @@ async function runRepairPipeline() {
       pipelineCurrentStep.value = `正在生成分镜视频（并发${concurrency}）...`
       const { paused } = await runConcurrently(boards2, concurrency, async (sb) => {
         await checkPause()
-        const stepName = '分镜视频 #' + (sb.storyboard_number ?? sb.id)
-        const ok = await pipelineWithRetry(stepName, async () => {
-          const universal = isSbUniversalMode(sb.id)
-          const omniRefs = universal ? collectSbOmniReferenceAbsoluteUrls(sb) : []
-          const firstFrameUrl = await getMainImageUrlForVideo(sb)
-          const absoluteUrl = universal ? (omniRefs[0] || '') : toAbsoluteImageUrl(firstFrameUrl)
-          const { first: vFirst, last: vLast } = sbVideoFirstLastUrls(sb, universal, null)
-          let refUrls = universal
-            ? (omniRefs.length ? omniRefs : undefined)
-            : (absoluteUrl ? [absoluteUrl] : undefined)
-          if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
-            refUrls = [...refUrls, vLast]
-          }
-          const res = await videosAPI.create({
-            drama_id: dramaIdVal,
-            storyboard_id: sb.id,
-            prompt: buildSbVideoPromptForApi(sb),
-            image_url: vFirst || undefined,
-            first_frame_url: vFirst,
-            last_frame_url: vLast,
-            reference_image_urls: refUrls,
-            aspect_ratio: projectAspectRatio.value || '16:9',
-            resolution: videoResolution.value || undefined,
-            duration: getSbVideoDurationForApi(sb),
+        generatingSbVideoIds.add(sb.id)
+        try {
+          const stepName = '分镜视频 #' + (sb.storyboard_number ?? sb.id)
+          const ok = await pipelineWithRetry(stepName, async () => {
+            const universal = isSbUniversalMode(sb.id)
+            const omniRefs = universal ? collectSbOmniReferenceAbsoluteUrls(sb) : []
+            const firstFrameUrl = await getMainImageUrlForVideo(sb)
+            const absoluteUrl = universal ? (omniRefs[0] || '') : toAbsoluteImageUrl(firstFrameUrl)
+            const { first: vFirst, last: vLast } = sbVideoFirstLastUrls(sb, universal, null)
+            let refUrls = universal
+              ? (omniRefs.length ? omniRefs : undefined)
+              : (absoluteUrl ? [absoluteUrl] : undefined)
+            if (!universal && vLast && refUrls && !refUrls.includes(vLast)) {
+              refUrls = [...refUrls, vLast]
+            }
+            const res = await videosAPI.create({
+              drama_id: dramaIdVal,
+              storyboard_id: sb.id,
+              prompt: buildSbVideoPromptForApi(sb),
+              image_url: vFirst || undefined,
+              first_frame_url: vFirst,
+              last_frame_url: vLast,
+              reference_image_urls: refUrls,
+              aspect_ratio: projectAspectRatio.value || '16:9',
+              resolution: videoResolution.value || undefined,
+              duration: getSbVideoDurationForApi(sb),
+            })
+            if (res?.task_id) {
+              const meta = buildSbGenMeta(sb, GEN_RESOURCE.SB_VIDEO, '分镜视频')
+              const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id), meta)
+              if (result?.paused) return { paused: true }
+              if (result?.error) throw new Error(result.error)
+            } else await loadSingleStoryboardMedia(sb.id)
           })
-          if (res?.task_id) {
-            const result = await pollTaskWithPause(res.task_id, () => loadSingleStoryboardMedia(sb.id))
-            if (result?.paused) return { paused: true }
-            if (result?.error) throw new Error(result.error)
-          } else await loadSingleStoryboardMedia(sb.id)
-        })
-        if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
+          if (ok && typeof ok === 'object' && ok.paused) return { paused: true }
+        } finally {
+          generatingSbVideoIds.delete(sb.id)
+        }
       }, { getLabel: (sb) => '分镜视频 #' + (sb.storyboard_number ?? sb.id) })
       if (paused) { await waitForResume() }
     }
@@ -8330,6 +8477,30 @@ html.light .quick-nav {
   flex: 1;
   min-width: 0;
 }
+.atp-item-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #71717a;
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.atp-item:hover .atp-item-close,
+.atp-item-close:focus-visible {
+  opacity: 1;
+}
+.atp-item-close:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
 .atp-more {
   font-size: 0.68rem;
   color: #71717a;
@@ -8356,6 +8527,8 @@ html.light .atp-spin-dot { background: #7c3aed; }
 html.light .atp-item-dot { background: #8b5cf6; }
 html.light .atp-item-label { color: #374151; }
 html.light .atp-item:hover { background: rgba(0,0,0,0.04); }
+html.light .atp-item-close { color: #9ca3af; }
+html.light .atp-item-close:hover { background: rgba(239,68,68,0.1); color: #dc2626; }
 html.light .atp-panel { border-top-color: rgba(139,92,246,0.15); }
 .nav-sidebar-header {
   display: flex;

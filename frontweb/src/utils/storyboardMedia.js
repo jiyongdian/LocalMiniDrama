@@ -136,3 +136,19 @@ export function sbVideoFirstLastUrls(sb, imagesBySbId, useFirstLast) {
   }
   return { first: first || undefined, last }
 }
+
+/** 分镜是否已有可用图片（与列表模式 hasSbImage 逻辑对齐） */
+export function hasStoryboardImage(sb, imagesBySbId, drama) {
+  if (!sb) return false
+  if (dramaUsesFirstLastFrame(drama) && sb.creation_mode !== 'universal') {
+    return !!(resolveSbFirstImageRecord(sb, imagesBySbId) || sb.image_url || sb.local_path || sb.composed_image)
+  }
+  return !!(resolveSbMainImageRecord(sb, imagesBySbId) || sb.image_url || sb.local_path || sb.composed_image)
+}
+
+/** 分镜是否已有可用视频 */
+export function hasStoryboardVideo(sb, videosBySbId) {
+  if (!sb) return false
+  const rec = resolveSbVideoRecord(sb, videosBySbId)
+  return !!(rec?.video_url || rec?.local_path || sb.video_url)
+}

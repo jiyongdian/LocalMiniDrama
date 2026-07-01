@@ -1,11 +1,12 @@
 <template>
   <div class="canvas-node-stack">
-    <div class="canvas-media-node" :class="['kind-' + data.kind, { highlighted: data.highlighted, dimmed: data.dimmed, focused: showPanel }]">
+    <div class="canvas-media-node" :class="['kind-' + data.kind, { highlighted: data.highlighted, dimmed: data.dimmed, focused: showPanel, processing: isNodeBusy }]">
       <Handle type="target" :position="Position.Left" />
       <Handle v-if="data.kind !== 'video' && data.kind !== 'audio'" type="source" :position="Position.Right" />
+      <CanvasNodeStatusOverlay :node-id="id" />
       <div class="tag">{{ kindLabel }}</div>
       <template v-if="data.kind === 'text'">
-        <p class="text-body">{{ data.summary || '暂无文本' }}</p>
+        <p class="text-body">{{ data.summary || '暂无脚本' }}</p>
       </template>
       <template v-else-if="data.kind === 'universal'">
         <p class="text-body universal-body">{{ data.summary || '暂无全能分镜词' }}</p>
@@ -27,6 +28,7 @@
     </div>
     <CanvasMediaPanel
       v-if="showPanel"
+      :node-id="id"
       :kind="data.kind"
       :storyboard="data.storyboard"
       :summary="data.summary"
@@ -41,6 +43,7 @@ import { computed } from 'vue'
 import { Handle, Position } from '@vue-flow/core'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import CanvasMediaPanel from './CanvasMediaPanel.vue'
+import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
 
 const props = defineProps({
   id: { type: String, required: true },
@@ -50,9 +53,14 @@ const props = defineProps({
 const ctx = useCanvasContext()
 const showPanel = computed(() => ctx?.focusedNodeId?.value === props.id)
 
+const isNodeBusy = computed(() => {
+  const map = ctx?.nodeStatus?.map
+  return map ? !!map[props.id] : false
+})
+
 const kindLabel = computed(() => {
   if (props.data.frameLabel) return props.data.frameLabel
-  const map = { text: '文本', universal: '全能分镜词', image: '分镜图', video: '视频', audio: '音频' }
+  const map = { text: '脚本摘要', universal: '全能分镜词', image: '分镜图', video: '视频', audio: '音频' }
   return map[props.data.kind] || props.data.kind
 })
 </script>
@@ -64,6 +72,7 @@ const kindLabel = computed(() => {
   align-items: flex-start;
 }
 .canvas-media-node {
+  position: relative;
   width: 168px;
   min-height: 100px;
   padding: 8px;
@@ -129,6 +138,7 @@ const kindLabel = computed(() => {
 .kind-image { border-color: rgba(129, 140, 248, 0.4); }
 .kind-video { border-color: rgba(244, 114, 182, 0.4); }
 .kind-audio { border-color: rgba(251, 191, 36, 0.4); }
+.canvas-media-node.processing { border-color: #60a5fa; }
 .highlighted { box-shadow: 0 0 0 2px rgba(129, 140, 248, 0.55); }
 .dimmed { opacity: 0.28; }
 </style>

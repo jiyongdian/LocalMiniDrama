@@ -1,13 +1,28 @@
 <template>
   <div class="canvas-node-stack">
-    <div class="canvas-asset-node" :class="['kind-' + data.kind, { highlighted: data.highlighted, dimmed: data.dimmed, focused: showPanel }]">
+    <div
+      class="canvas-asset-node"
+      :class="[
+        'kind-' + data.kind,
+        {
+          highlighted: data.highlighted,
+          dimmed: data.dimmed,
+          focused: showPanel,
+          processing: isNodeBusy || entityStatus === 'processing',
+        },
+      ]"
+    >
       <Handle type="source" :position="Position.Right" />
       <div class="cover">
-        <img v-if="thumbUrl" :src="thumbUrl" alt="" />
-        <div v-else class="cover-placeholder">{{ kindIcon }}</div>
+        <img v-if="thumbUrl && !isNodeBusy" :src="thumbUrl" alt="" />
+        <div v-else-if="!isNodeBusy" class="cover-placeholder">{{ kindIcon }}</div>
+        <CanvasNodeStatusOverlay :node-id="id" />
       </div>
       <div class="info">
-        <div class="name">{{ displayName }}</div>
+        <div class="name-row">
+          <span class="name">{{ displayName }}</span>
+          <span v-if="statusChip" class="status-chip" :class="'st-' + statusChip.key">{{ statusChip.label }}</span>
+        </div>
         <div class="kind">{{ kindLabel }}</div>
       </div>
     </div>
@@ -26,6 +41,7 @@ import { Handle, Position } from '@vue-flow/core'
 import { assetImageUrl } from '@/utils/mediaUrl'
 import { useCanvasContext } from '@/composables/useCanvasContext'
 import CanvasAssetPanel from './CanvasAssetPanel.vue'
+import CanvasNodeStatusOverlay from './CanvasNodeStatusOverlay.vue'
 
 const props = defineProps({
   id: { type: String, required: true },
@@ -51,6 +67,23 @@ const displayName = computed(() => {
 })
 
 const thumbUrl = computed(() => assetImageUrl(props.data.entity))
+const entityStatus = computed(() => props.data.entity?.status || '')
+
+const isNodeBusy = computed(() => {
+  const map = ctx?.nodeStatus?.map
+  return map ? !!map[props.id] : false
+})
+
+const statusChip = computed(() => {
+  const map = ctx?.nodeStatus?.map
+  const busy = map?.[props.id]
+  if (busy) return { key: 'busy', label: busy.message?.slice(0, 8) || '处理中' }
+  const s = entityStatus.value
+  if (s === 'processing') return { key: 'processing', label: '生成中' }
+  if (s === 'failed') return { key: 'failed', label: '失败' }
+  if (thumbUrl.value) return { key: 'ready', label: '有图' }
+  return null
+})
 </script>
 
 <style scoped>
@@ -60,6 +93,7 @@ const thumbUrl = computed(() => assetImageUrl(props.data.entity))
   align-items: flex-start;
 }
 .canvas-asset-node {
+  position: relative;
   width: 176px;
   border-radius: 12px;
   overflow: hidden;
@@ -73,7 +107,12 @@ const thumbUrl = computed(() => assetImageUrl(props.data.entity))
   border-color: #34d399;
   box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.45), 0 8px 24px rgba(0, 0, 0, 0.35);
 }
+.canvas-asset-node.processing {
+  border-color: #60a5fa;
+  animation: asset-pulse 1.4s ease-in-out infinite;
+}
 .cover {
+  position: relative;
   height: 108px;
   background: #09090b;
   display: flex;
@@ -92,7 +131,14 @@ const thumbUrl = computed(() => assetImageUrl(props.data.entity))
 .info {
   padding: 8px 10px 10px;
 }
+.name-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
 .name {
+  flex: 1;
   font-size: 13px;
   font-weight: 600;
   color: var(--text-bright, #fafafa);
@@ -100,6 +146,18 @@ const thumbUrl = computed(() => assetImageUrl(props.data.entity))
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.status-chip {
+  flex-shrink: 0;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #a1a1aa;
+}
+.status-chip.st-busy,
+.status-chip.st-processing { color: #60a5fa; background: rgba(96, 165, 250, 0.15); }
+.status-chip.st-ready { color: #34d399; background: rgba(52, 211, 153, 0.12); }
+.status-chip.st-failed { color: #f87171; background: rgba(248, 113, 113, 0.12); }
 .kind {
   font-size: 11px;
   color: var(--text-subtle, #71717a);
@@ -114,5 +172,9 @@ const thumbUrl = computed(() => assetImageUrl(props.data.entity))
 .dimmed {
   opacity: 0.28;
   filter: grayscale(0.35);
+}
+@keyframes asset-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(96, 165, 250, 0.25); }
+  50% { box-shadow: 0 0 0 5px rgba(96, 165, 250, 0.06); }
 }
 </style>
